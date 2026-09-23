@@ -191,7 +191,7 @@
         <span>Move: <span class="hud-key">W</span><span class="hud-key">A</span><span class="hud-key">S</span><span class="hud-key">D</span></span>
         <span>Look: <span class="hud-key">Mouse</span></span>
         <span>Interact: <span class="hud-key">Click / E</span></span>
-        <span>Restart: <span class="hud-key">R</span></span>
+        <span>Spray: <span class="hud-key">Hold R</span></span>
         <span>Debug: <span class="hud-key">F3</span></span>
     </div>
 
@@ -203,8 +203,10 @@
         <div id="hud-alarm" style="color: #94a3b8;">Alarm: Standby</div>
         <div style="margin-top: 6px;">Smoke Exposure: <span id="hud-smoke-val">0%</span></div>
         <div class="meter-bar"><div id="smoke-meter-fill" class="meter-fill"></div></div>
-        <div id="hud-extinguisher-box" style="display: none; margin-top: 6px;">
-            Extinguisher: <span id="hud-ext-val">100%</span>
+        <div id="hud-extinguisher-box" style="margin-top: 8px; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 6px;">
+            <div id="hud-ext-status" style="font-weight: 700; color: #38bdf8; font-size: 11px;">EQUIP EXTINGUISHER FIRST</div>
+            <div id="hud-ext-hint" style="color: #94a3b8; font-size: 10px;">Press E / Click near extinguisher to grab</div>
+            <div style="margin-top: 3px;">Extinguisher: <span id="hud-ext-val">100%</span></div>
             <div class="meter-bar"><div id="ext-meter-fill" class="meter-fill" style="background: #38bdf8; width: 100%;"></div></div>
         </div>
     </div>
@@ -228,6 +230,14 @@
         Spray: <span id="dbg-ext-spray">INACTIVE</span><br>
         Charge: <span id="dbg-ext-charge">100%</span><br>
         Target: <span id="dbg-ext-target">NONE</span><br>
+        <strong>--- EXIT B DEBUG ---</strong><br>
+        Door: <span id="dbg-exitb-door">CLOSED</span><br>
+        Door Collision: <span id="dbg-exitb-col">ON</span><br>
+        Player Inside: <span id="dbg-exitb-inside">YES</span><br>
+        Player Outside: <span id="dbg-exitb-outside">NO</span><br>
+        Blocking Collider: <span id="dbg-exitb-blocker">NONE</span><br>
+        Distance To Exit: <span id="dbg-exitb-dist">0.0m</span><br>
+        Assembly Point: <span id="dbg-exitb-assembly">NOT REACHED</span><br>
         <strong>--- FIRES ---</strong><br>
         Trash Fire HP: <span id="dbg-fire-hp">100%</span><br>
         Smoke Exposure: <span id="dbg-smoke">0s</span><br>
@@ -542,6 +552,11 @@
                 }
             },
 
+            isBoxActive: function(id) {
+                const box = obstacles.find(b => b.id === id);
+                return box ? box.active : false;
+            },
+
             getObstacleCount: function() {
                 return obstacles.filter(b => b.active).length;
             },
@@ -842,6 +857,10 @@
                 currentTarget = el;
                 let text = 'INTERACT';
 
+                const doorEl = el.closest ? el.closest('[unified-door]') : null;
+                const alarmEl = el.closest ? el.closest('[fire-alarm-station]') : null;
+                const extEl = el.closest ? el.closest('[fire-extinguisher]') : null;
+
                 if (el.id === 'room101Door' || el.id === 'room101DoorHitbox' || el.id === 'room101DoorMesh') {
                     text = doorOpen ? 'CLOSE DOOR' : 'OPEN DOOR';
                     updateDoorFeedback(text);
@@ -850,12 +869,12 @@
                         mesh.setAttribute('material', 'emissive', '#38bdf8');
                         mesh.setAttribute('material', 'emissiveIntensity', '0.5');
                     }
-                } else if (el.components['unified-door']) {
-                    text = el.components['unified-door'].data.isOpen ? 'CLOSE DOOR' : 'OPEN DOOR';
-                } else if (el.components['fire-alarm-station']) {
+                } else if (doorEl && doorEl.components['unified-door']) {
+                    text = doorEl.components['unified-door'].data.isOpen ? 'CLOSE DOOR' : 'OPEN DOOR';
+                } else if (alarmEl && alarmEl.components['fire-alarm-station']) {
                     text = 'PULL FIRE ALARM';
-                } else if (el.components['fire-extinguisher']) {
-                    text = el.components['fire-extinguisher'].state === EXTINGUISHER_STATES.AVAILABLE ? 'GRAB EXTINGUISHER' : (el.components['fire-extinguisher'].spraying ? 'SPRAYING...' : 'EXTINGUISHER EQUIPPED');
+                } else if (extEl && extEl.components['fire-extinguisher']) {
+                    text = extEl.components['fire-extinguisher'].state === EXTINGUISHER_STATES.AVAILABLE ? 'GRAB EXTINGUISHER' : (extEl.components['fire-extinguisher'].spraying ? 'SPRAYING...' : 'EXTINGUISHER EQUIPPED');
                 } else if (el.getAttribute('data-action-text')) {
                     text = el.getAttribute('data-action-text');
                 }
@@ -866,7 +885,7 @@
                 }
 
                 const dbgTarget = document.querySelector('#dbg-target');
-                if (dbgTarget) dbgTarget.innerText = `${el.id || 'Object'} (${text})`;
+                if (dbgTarget) dbgTarget.innerText = `${(doorEl || alarmEl || extEl || el).id || 'Object'} (${text})`;
             },
 
             onRayLeave: function(el) {
@@ -895,15 +914,19 @@
                 if (!currentTarget) return;
 
                 console.log(`[INTERACTION] Executing on: ${currentTarget.id}`);
+                const doorEl = currentTarget.closest ? currentTarget.closest('[unified-door]') : null;
+                const alarmEl = currentTarget.closest ? currentTarget.closest('[fire-alarm-station]') : null;
+                const extEl = currentTarget.closest ? currentTarget.closest('[fire-extinguisher]') : null;
+
                 if (currentTarget.id === 'room101Door' || currentTarget.id === 'room101DoorHitbox' || currentTarget.id === 'room101DoorMesh') {
                     console.log('[INTERACTION]\nTarget: Room 101 Door\nAction: OPEN');
                     doorInteraction('interaction ray');
-                } else if (currentTarget.components['unified-door']) {
-                    currentTarget.components['unified-door'].toggle();
-                } else if (currentTarget.components['fire-alarm-station']) {
-                    currentTarget.components['fire-alarm-station'].pull();
-                } else if (currentTarget.components['fire-extinguisher']) {
-                    currentTarget.components['fire-extinguisher'].interact();
+                } else if (doorEl && doorEl.components['unified-door']) {
+                    doorEl.components['unified-door'].toggle();
+                } else if (alarmEl && alarmEl.components['fire-alarm-station']) {
+                    alarmEl.components['fire-alarm-station'].pull();
+                } else if (extEl && extEl.components['fire-extinguisher']) {
+                    extEl.components['fire-extinguisher'].interact();
                 } else {
                     currentTarget.emit('click');
                     currentTarget.emit('interaction-trigger');
@@ -925,6 +948,10 @@
         init: function() {
             this.initialY = this.el.getAttribute('rotation').y;
             this.isAnimating = false;
+            this.el.addEventListener('click', (e) => {
+                if (e) e.stopPropagation();
+                this.toggle();
+            });
         },
 
         toggle: function() {
@@ -1003,6 +1030,78 @@
     let extinguisherState = EXTINGUISHER_STATES.AVAILABLE;
     let extinguisherCharge = 100;
     let extinguisherComponent = null;  // ref to A-Frame component instance
+    let isRKeyDown = false;
+
+    function updateExtinguisherHUD() {
+        const extStatus = document.querySelector('#hud-ext-status');
+        const extHint = document.querySelector('#hud-ext-hint');
+        const extVal = document.querySelector('#hud-ext-val');
+        const meterFill = document.querySelector('#ext-meter-fill');
+        const dbgExt = document.querySelector('#dbg-ext');
+        const dbgSpray = document.querySelector('#dbg-ext-spray');
+        const dbgCharge = document.querySelector('#dbg-ext-charge');
+
+        if (!extinguisherComponent || extinguisherState === EXTINGUISHER_STATES.AVAILABLE) {
+            if (extStatus) extStatus.innerText = 'EQUIP EXTINGUISHER FIRST';
+            if (extHint) extHint.innerText = 'Press E / Click near extinguisher to grab';
+            if (dbgExt) dbgExt.innerText = `AVAILABLE (${Math.round(extinguisherCharge)}%)`;
+            if (dbgSpray) dbgSpray.innerText = 'INACTIVE';
+        } else if (extinguisherState === EXTINGUISHER_STATES.SPRAYING) {
+            if (extStatus) extStatus.innerText = 'SPRAYING';
+            if (extHint) extHint.innerText = `CHARGE: ${Math.round(extinguisherCharge)}%`;
+            if (dbgExt) dbgExt.innerText = `SPRAYING (${Math.round(extinguisherCharge)}%)`;
+            if (dbgSpray) dbgSpray.innerText = 'ACTIVE';
+        } else if (extinguisherState === EXTINGUISHER_STATES.EMPTY) {
+            if (extStatus) extStatus.innerText = 'EXTINGUISHER EMPTY';
+            if (extHint) extHint.innerText = 'Evacuate immediately!';
+            if (dbgExt) dbgExt.innerText = 'EMPTY (0%)';
+            if (dbgSpray) dbgSpray.innerText = 'INACTIVE';
+        } else {
+            // EXTINGUISHER_STATES.EQUIPPED
+            if (extStatus) extStatus.innerText = 'EXTINGUISHER READY';
+            if (extHint) extHint.innerText = 'HOLD R TO SPRAY';
+            if (dbgExt) dbgExt.innerText = `EQUIPPED (${Math.round(extinguisherCharge)}%)`;
+            if (dbgSpray) dbgSpray.innerText = 'INACTIVE';
+        }
+
+        if (extVal) extVal.innerText = `${Math.round(extinguisherCharge)}%`;
+        if (dbgCharge) dbgCharge.innerText = `${Math.round(extinguisherCharge)}%`;
+        if (meterFill) meterFill.style.width = `${Math.round(extinguisherCharge)}%`;
+    }
+
+    function startExtinguisherSpray(source = 'general') {
+        if (!extinguisherComponent || extinguisherState === EXTINGUISHER_STATES.AVAILABLE) {
+            updateExtinguisherHUD();
+            SimulationManager.showVRToast("⚠️ EQUIP EXTINGUISHER FIRST", 1600);
+            console.warn('[EXTINGUISHER] Cannot spray — EQUIP EXTINGUISHER FIRST');
+            return;
+        }
+        extinguisherComponent.startSpray(source);
+        updateExtinguisherHUD();
+    }
+
+    function stopExtinguisherSpray() {
+        if (extinguisherComponent) {
+            extinguisherComponent.stopSpray();
+        }
+        updateExtinguisherHUD();
+    }
+
+    // Dedicated Desktop R-Key Spray Control (Hold R to continuously spray, Release to stop)
+    window.addEventListener('keydown', (event) => {
+        if (event.code === "KeyR") {
+            if (event.repeat || isRKeyDown) return;
+            isRKeyDown = true;
+            startExtinguisherSpray('KeyR desktop');
+        }
+    });
+
+    window.addEventListener('keyup', (event) => {
+        if (event.code === "KeyR") {
+            isRKeyDown = false;
+            stopExtinguisherSpray();
+        }
+    });
 
     // =========================================================================
     // FIRE-HAZARD COMPONENT — Placed on extinguishable/non-extinguishable fires
@@ -1089,59 +1188,72 @@
             this.el.setAttribute('scale', '0.65 0.65 0.65');
 
             document.querySelector('#hud-extinguisher-box').style.display = 'block';
-            SimulationManager.showVRToast("🧯 EXTINGUISHER EQUIPPED\nTrigger / Left Click = SPRAY", 3000);
+            SimulationManager.showVRToast("🧯 EXTINGUISHER READY\nHOLD R TO SPRAY", 3000);
             SimulationManager.trackExtinguisherEquipped();
 
             console.log('[EXTINGUISHER] PICKED UP');
             console.log('[EXTINGUISHER] STATE = EQUIPPED');
 
-            const dbgExt = document.querySelector('#dbg-ext');
-            if (dbgExt) dbgExt.innerText = `EQUIPPED (${Math.round(this.capacity)}%)`;
+            updateExtinguisherHUD();
 
             // Bind controller trigger listeners for spray
             this.bindSprayControls();
         },
 
         bindSprayControls: function() {
-            const self = this;
-
             // Quest VR Controller trigger bindings
             ['#rightHand', '#leftHand'].forEach(sel => {
                 const hand = document.querySelector(sel);
                 if (hand) {
-                    hand.addEventListener('triggerdown', () => self.startSpray('Quest trigger'));
-                    hand.addEventListener('triggerup', () => self.stopSpray());
-                    hand.addEventListener('gripdown', () => self.startSpray('Quest grip'));
-                    hand.addEventListener('gripup', () => self.stopSpray());
+                    hand.addEventListener('triggerdown', () => {
+                        if (extinguisherComponent && extinguisherComponent.equipped) {
+                            startExtinguisherSpray('Quest trigger');
+                        }
+                    });
+                    hand.addEventListener('triggerup', () => {
+                        if (extinguisherComponent && extinguisherComponent.equipped) {
+                            stopExtinguisherSpray();
+                        }
+                    });
+                    hand.addEventListener('gripdown', () => {
+                        if (extinguisherComponent && extinguisherComponent.equipped) {
+                            startExtinguisherSpray('Quest grip');
+                        }
+                    });
+                    hand.addEventListener('gripup', () => {
+                        if (extinguisherComponent && extinguisherComponent.equipped) {
+                            stopExtinguisherSpray();
+                        }
+                    });
                 }
             });
 
-            // Desktop mouse: left button = spray
+            // Desktop mouse: left button = optional secondary spray
             window.addEventListener('mousedown', (e) => {
-                if (e.button === 0 && self.equipped && !self.spraying) {
+                if (e.button === 0 && extinguisherComponent && extinguisherComponent.equipped && !extinguisherComponent.spraying) {
                     // Exclude UI clicks
                     if (e.target.tagName === 'BUTTON' || e.target.closest('#debug-overlay') ||
                         e.target.closest('#status-hud') || e.target.closest('#desktop-hud') ||
                         e.target.id === 'debug-door-btn') return;
-                    self.startSpray('Desktop mouse');
+                    startExtinguisherSpray('Desktop mouse');
                 }
             });
             window.addEventListener('mouseup', (e) => {
-                if (e.button === 0 && self.spraying) {
-                    self.stopSpray();
+                if (e.button === 0 && extinguisherComponent && extinguisherComponent.spraying) {
+                    stopExtinguisherSpray();
                 }
             });
 
-            // Desktop spacebar = spray
+            // Desktop spacebar = optional spray
             window.addEventListener('keydown', (e) => {
-                if (e.code === 'Space' && self.equipped && !self.spraying) {
+                if (e.code === 'Space' && extinguisherComponent && extinguisherComponent.equipped && !extinguisherComponent.spraying) {
                     e.preventDefault();
-                    self.startSpray('Desktop spacebar');
+                    startExtinguisherSpray('Desktop spacebar');
                 }
             });
             window.addEventListener('keyup', (e) => {
-                if (e.code === 'Space' && self.spraying) {
-                    self.stopSpray();
+                if (e.code === 'Space' && extinguisherComponent && extinguisherComponent.spraying) {
+                    stopExtinguisherSpray();
                 }
             });
         },
@@ -1153,12 +1265,14 @@
                 SoundEngine.playWarningTone();
                 SimulationManager.showVRToast("🧯 EXTINGUISHER EMPTY", 2000);
                 console.log('[EXTINGUISHER] Cannot spray — EMPTY');
+                updateExtinguisherHUD();
                 return;
             }
 
             if (this.state !== EXTINGUISHER_STATES.EQUIPPED &&
                 this.state !== EXTINGUISHER_STATES.SPRAYING) {
                 console.warn('[EXTINGUISHER] Cannot spray. Not equipped. State:', this.state);
+                updateExtinguisherHUD();
                 return;
             }
 
@@ -1173,8 +1287,7 @@
             SoundEngine.startExtinguisherHiss();
             console.log(`[EXTINGUISHER] SPRAY STARTED (source: ${source})`);
 
-            const dbgExt = document.querySelector('#dbg-ext');
-            if (dbgExt) dbgExt.innerText = `SPRAYING (${Math.round(this.capacity)}%)`;
+            updateExtinguisherHUD();
         },
 
         stopSpray: function() {
@@ -1197,8 +1310,7 @@
             SoundEngine.stopExtinguisherHiss();
             console.log('[EXTINGUISHER] SPRAY STOPPED');
 
-            const dbgExt = document.querySelector('#dbg-ext');
-            if (dbgExt) dbgExt.innerText = `${this.state.toUpperCase()} (${Math.round(this.capacity)}%)`;
+            updateExtinguisherHUD();
         },
 
         tick: function(time, delta) {
@@ -1206,15 +1318,11 @@
 
             const dt = delta / 1000.0; // seconds
 
-            // Drain charge
+            // Drain charge (10% per second)
             this.capacity = Math.max(0, this.capacity - 10 * dt);
             extinguisherCharge = this.capacity;
 
-            // Update HUD
-            const hudVal = document.querySelector('#hud-ext-val');
-            if (hudVal) hudVal.innerText = `${Math.round(this.capacity)}%`;
-            const meterFill = document.querySelector('#ext-meter-fill');
-            if (meterFill) meterFill.style.width = `${Math.round(this.capacity)}%`;
+            updateExtinguisherHUD();
 
             // Auto-stop when empty
             if (this.capacity <= 0) {
@@ -1224,6 +1332,7 @@
                 SoundEngine.playWarningTone();
                 SimulationManager.showVRToast("⚠️ EXTINGUISHER EMPTY!\nEvacuate immediately!", 2200);
                 console.log('[EXTINGUISHER] CHARGE DEPLETED — EMPTY');
+                updateExtinguisherHUD();
                 return;
             }
 
@@ -1730,15 +1839,22 @@
             <a-box position="18 0.2 -14.5" width="2.0" height="0.4" depth="2.2" color="#475569"></a-box>
             <a-box position="19 0.5 -14.5" width="1.2" height="0.6" depth="2.2" color="#334155"></a-box>
 
+            <!-- Exit B Doorway Wall Frame at X = 24.0 (1.6m wide doorway between Z = -13.7 and Z = -15.3) -->
             <a-plane position="24 2.6 -14.5" rotation="0 -90 0" width="3" height="0.8" mixin="wall-mat"></a-plane>
-            <a-plane position="24 1.5 -13.25" rotation="0 -90 0" width="0.5" height="3" mixin="wall-mat"></a-plane>
-            <a-plane position="24 1.5 -15.75" rotation="0 -90 0" width="0.5" height="3" mixin="wall-mat"></a-plane>
+            <a-plane position="24 1.1 -13.35" rotation="0 -90 0" width="0.7" height="2.2" mixin="wall-mat"></a-plane>
+            <a-plane position="24 1.1 -15.65" rotation="0 -90 0" width="0.7" height="2.2" mixin="wall-mat"></a-plane>
 
-            <a-entity id="door-exit-b" position="24 0 -13.5" rotation="0 -90 0" class="clickable"
-                      unified-door="isOpen: false; openAngle: -95; colliderId: col-door-exit-b">
-                <a-box class="clickable" position="0.75 1.1 0.02" width="1.5" height="2.2" depth="0.06" mixin="door-fire"></a-box>
-                <a-box position="0.75 1.0 0.08" width="1.2" height="0.1" depth="0.04" color="#dc2626"></a-box>
-                <a-text value="PUSH TO OPEN" position="0.75 1.0 0.11" align="center" width="1.3" color="#ffffff"></a-text>
+            <!-- Outer Facing Wall Frame (viewed from exterior) -->
+            <a-plane position="24.02 2.6 -14.5" rotation="0 90 0" width="3" height="0.8" mixin="wall-mat"></a-plane>
+            <a-plane position="24.02 1.1 -13.35" rotation="0 90 0" width="0.7" height="2.2" mixin="wall-mat"></a-plane>
+            <a-plane position="24.02 1.1 -15.65" rotation="0 90 0" width="0.7" height="2.2" mixin="wall-mat"></a-plane>
+
+            <!-- Exit B Door: Hinge at (24, 0, -13.7), swings OUTWARD (+95 deg) into exterior -->
+            <a-entity id="door-exit-b" position="24 0 -13.7" rotation="0 -90 0" class="clickable"
+                      unified-door="isOpen: false; openAngle: 95; colliderId: col-door-exit-b">
+                <a-box class="clickable" position="-0.75 1.1 0.02" width="1.5" height="2.2" depth="0.06" mixin="door-fire"></a-box>
+                <a-box position="-0.75 1.0 0.08" width="1.2" height="0.1" depth="0.04" color="#dc2626"></a-box>
+                <a-text value="PUSH TO OPEN" position="-0.75 1.0 0.11" align="center" width="1.3" color="#ffffff"></a-text>
             </a-entity>
 
             <a-entity position="23.9 2.5 -14.5" rotation="0 -90 0">
@@ -1749,9 +1865,46 @@
             </a-entity>
         </a-entity>
 
+        <!-- Exterior Fire Escape Path leading from Exit B to Courtyard -->
+        <a-entity id="exterior-escape-path">
+            <!-- Landing platform outside Exit B doorway -->
+            <a-plane position="25.5 0.02 -14.5" rotation="-90 0 0" width="3.2" height="3.6" color="#334155"></a-plane>
+            
+            <!-- Concrete walkway leading south toward Courtyard (Z = -14.5 down to Z = -26) -->
+            <a-plane position="25.5 0.02 -20.5" rotation="-90 0 0" width="3.2" height="9.0" color="#475569"></a-plane>
+            
+            <!-- Connecting walkway into Courtyard (Z = -25 to -27, X = 14 to 27) -->
+            <a-plane position="20.5 0.02 -25.5" rotation="-90 0 0" width="10.0" height="3.6" color="#475569"></a-plane>
+
+            <!-- Safety Handrail / Barrier along outer perimeter (X = 27.1) -->
+            <a-box position="27.1 0.6 -19.5" width="0.1" height="1.1" depth="11.0" color="#f59e0b"></a-box>
+            <a-cylinder position="27.1 0.6 -14.0" radius="0.05" height="1.1" color="#f59e0b"></a-cylinder>
+            <a-cylinder position="27.1 0.6 -19.5" radius="0.05" height="1.1" color="#f59e0b"></a-cylinder>
+            <a-cylinder position="27.1 0.6 -25.0" radius="0.05" height="1.1" color="#f59e0b"></a-cylinder>
+
+            <!-- Fire Escape North Wall / Barrier (Z = -12.7) -->
+            <a-box position="25.5 1.0 -12.7" width="3.2" height="2.0" depth="0.2" color="#334155"></a-box>
+
+            <!-- Directional Exit signs along exterior path -->
+            <a-entity position="26.8 1.8 -16.5" rotation="0 -90 0">
+                <a-plane width="1.6" height="0.4" mixin="exit-sign">
+                    <a-text value="SAFE MUSTER ZONE ▶" align="center" width="2.2" color="#ffffff"></a-text>
+                </a-plane>
+            </a-entity>
+            <a-entity position="26.8 1.8 -23.0" rotation="0 -90 0">
+                <a-plane width="1.6" height="0.4" mixin="exit-sign">
+                    <a-text value="ASSEMBLY POINT ▶" align="center" width="2.2" color="#ffffff"></a-text>
+                </a-plane>
+            </a-entity>
+
+            <!-- Exterior Pathway Lighting -->
+            <a-light type="point" color="#f8fafc" intensity="0.75" distance="16" position="25.5 3.5 -15.5"></a-light>
+            <a-light type="point" color="#f8fafc" intensity="0.75" distance="16" position="25.5 3.5 -22.5"></a-light>
+        </a-entity>
+
         <!-- 7. EXTERIOR COURTYARD & SAFE MUSTER POINT -->
         <a-entity id="exterior-courtyard">
-            <a-plane position="8 -0.01 -34" rotation="-90 0 0" width="40" height="20" color="#166534"></a-plane>
+            <a-plane position="8 -0.01 -32" rotation="-90 0 0" width="44" height="26" color="#166534"></a-plane>
             <a-plane position="0 0.01 -32" rotation="-90 0 0" width="6" height="12" color="#475569"></a-plane>
             <a-plane position="14 0.01 -24" rotation="-90 0 0" width="22" height="4" color="#475569"></a-plane>
 
@@ -1995,9 +2148,18 @@
                 // Emergency Exit B Hallway & Door
                 CollisionEngine.registerBox('hall-b-n', 3.0, 24.0, -16.2, -15.8);
                 CollisionEngine.registerBox('hall-b-s', 3.0, 24.0, -13.2, -12.8);
-                CollisionEngine.registerBox('col-door-exit-b', 23.8, 24.2, -15.0, -13.5, true);
+                // Exit B Wall Pillars flanking the 1.6m doorway (Z from -13.7 to -15.3)
+                CollisionEngine.registerBox('wall-exit-b-s', 23.8, 24.2, -13.7, -13.0);
+                CollisionEngine.registerBox('wall-exit-b-n', 23.8, 24.2, -16.0, -15.3);
+                // Dynamic Door Collider across doorway: active when closed, unblocked when open
+                CollisionEngine.registerBox('col-door-exit-b', 23.8, 24.2, -15.3, -13.7, true);
 
-                // Exterior Boundary Fence
+                // Exterior Fire Escape Path boundaries outside Exit B (X: 24 to 27, Z: -13 to -26)
+                CollisionEngine.registerBox('ext-path-n', 24.0, 27.6, -13.0, -12.6);
+                CollisionEngine.registerBox('ext-path-e', 27.2, 27.6, -24.0, -13.0);
+                CollisionEngine.registerBox('ext-path-w', 23.8, 24.2, -26.0, -16.0);
+
+                // Exterior Boundary Fence around Courtyard
                 CollisionEngine.registerBox('fence-n', -12.0, 28.0, -44.2, -43.8);
                 CollisionEngine.registerBox('fence-w', -12.2, -11.8, -44.0, -24.0);
                 CollisionEngine.registerBox('fence-e', 27.8, 28.2, -44.0, -24.0);
@@ -2062,15 +2224,19 @@
                     }
                 });
 
-                // Desktop window click listener targeting door
+                // Desktop window click listener targeting door and interactables
                 window.addEventListener('click', (e) => {
-                    if (e.target && (e.target.id === 'debug-door-btn' || e.target.closest('#debug-overlay') || e.target.closest('#desktop-hud'))) {
+                    if (e.target && (e.target.id === 'debug-door-btn' || e.target.closest('#debug-overlay') || e.target.closest('#desktop-hud') || e.target.closest('#status-hud'))) {
                         return;
                     }
                     const currentTarget = InteractionManager.getCurrentTarget();
-                    if (currentTarget && (currentTarget.id === 'room101Door' || currentTarget.id === 'room101DoorHitbox' || currentTarget.id === 'room101DoorMesh')) {
-                        console.log("[INTERACTION]\nTarget: Room 101 Door\nAction: OPEN");
-                        doorInteraction('Desktop Mouse Click');
+                    if (currentTarget) {
+                        if (currentTarget.id === 'room101Door' || currentTarget.id === 'room101DoorHitbox' || currentTarget.id === 'room101DoorMesh') {
+                            console.log("[INTERACTION]\nTarget: Room 101 Door\nAction: OPEN");
+                            doorInteraction('Desktop Mouse Click');
+                        } else {
+                            InteractionManager.executeCurrent();
+                        }
                     }
                 });
 
@@ -2079,12 +2245,21 @@
                     const hand = document.querySelector(sel);
                     if (hand) {
                         hand.addEventListener('triggerdown', () => {
+                            if (extinguisherComponent && extinguisherComponent.equipped) {
+                                startExtinguisherSpray('Quest trigger');
+                                return;
+                            }
                             const tgt = InteractionManager.getCurrentTarget();
                             if (tgt && (tgt.id === 'room101Door' || tgt.id === 'room101DoorHitbox' || tgt.id === 'room101DoorMesh')) {
                                 console.log("[VR INTERACTION]\nTarget: Room 101 Door\nAction: OPEN");
                                 openStartDoor('Quest Controller Trigger');
                             } else {
                                 InteractionManager.executeCurrent();
+                            }
+                        });
+                        hand.addEventListener('triggerup', () => {
+                            if (extinguisherComponent && extinguisherComponent.equipped) {
+                                stopExtinguisherSpray();
                             }
                         });
                         hand.addEventListener('select', () => {
@@ -2108,15 +2283,13 @@
                 });
             },
 
-            // Keyboard Shortcuts: E = interact, F3/F10 = debug, R = restart. (D is strictly movement!)
+            // Keyboard Shortcuts: E = interact/equip, F3/F10 = debug, R = spray (via KeyR). (D is strictly movement!)
             setupKeyboardShortcuts: function() {
                 window.addEventListener('keydown', (e) => {
                     if (e.key === 'F3' || e.key === 'F10') {
                         e.preventDefault();
                         const dbg = document.querySelector('#debug-overlay');
                         dbg.style.display = (dbg.style.display === 'none' || !dbg.style.display) ? 'block' : 'none';
-                    } else if (e.key === 'r' || e.key === 'R') {
-                        this.restartScenario();
                     } else if (e.key === '1') {
                         this.setScenarioById(1);
                     } else if (e.key === '2') {
@@ -2124,17 +2297,42 @@
                     } else if (e.key === '3') {
                         this.setScenarioById(3);
                     } else if (e.key === 'e' || e.key === 'E') {
-                        console.log("[DOOR] Interaction received");
-                        // Proximity check to Room 101 Door
+                        console.log("[INTERACTION] E key received");
                         const rig = document.querySelector('#rig');
                         const rigPos = rig ? rig.getAttribute('position') : { x: 0, z: 0 };
+
+                        // 1. Proximity check to Fire Extinguisher (if not equipped)
+                        if (extinguisherComponent && extinguisherComponent.state === EXTINGUISHER_STATES.AVAILABLE) {
+                            const extEl = document.querySelector('#fire-extinguisher');
+                            if (extEl) {
+                                const extWorld = new THREE.Vector3();
+                                extEl.object3D.getWorldPosition(extWorld);
+                                const distExt = Math.hypot(rigPos.x - extWorld.x, rigPos.z - extWorld.z);
+                                if (distExt < 3.2) {
+                                    extinguisherComponent.equip();
+                                    return;
+                                }
+                            }
+                        }
+
+                        // 2. Proximity check to Room 101 Door
                         const distToDoor101 = Math.hypot(rigPos.x - 0.0, rigPos.z - (-2.0));
                         if (distToDoor101 < 3.5) {
                             doorInteraction('Desktop E key proximity');
                             return;
                         }
 
-                        // Otherwise execute targeted interactable
+                        // 3. Proximity check to Exit B Door
+                        const distToExitB = Math.hypot(rigPos.x - 24.0, rigPos.z - (-14.5));
+                        if (distToExitB < 3.5) {
+                            const exitBDoor = document.querySelector('#door-exit-b');
+                            if (exitBDoor && exitBDoor.components['unified-door']) {
+                                exitBDoor.components['unified-door'].toggle();
+                                return;
+                            }
+                        }
+
+                        // 4. Otherwise execute targeted interactable
                         InteractionManager.executeCurrent();
                     }
                 });
@@ -2375,8 +2573,44 @@
                         }
                     }
 
+                    // Exit B Debug info
+                    const exitBDoor = document.querySelector('#door-exit-b');
+                    const exitBComp = exitBDoor ? exitBDoor.components['unified-door'] : null;
+                    const isDoorOpen = exitBComp ? exitBComp.data.isOpen : false;
+                    const isDoorColActive = CollisionEngine.isBoxActive('col-door-exit-b');
+
+                    // Outside if past Exit B doorway (x > 24.0) or in courtyard (z < -26.0)
+                    const isOutside = (p.x > 24.0 && p.z <= -13.0 && p.z >= -26.0) || (p.z < -26.0);
+                    const isInside = !isOutside;
+
+                    // Automatically track Exit B usage if player moved out through Exit B
+                    if (isOutside && p.x > 20 && exitUsed === 'None') {
+                        exitUsed = 'Emergency Exit B (Stairwell)';
+                    }
+
+                    const distToExitB = Math.hypot(p.x - 24.0, p.z - (-14.5));
+                    const isAssembly = (p.x >= 6.0 && p.x <= 14.0 && p.z <= -30.0 && p.z >= -38.0);
+                    const blockingCollider = CollisionEngine.isColliding(p.x, p.z);
+
+                    const dbgDoor = document.querySelector('#dbg-exitb-door');
+                    const dbgCol = document.querySelector('#dbg-exitb-col');
+                    const dbgInside = document.querySelector('#dbg-exitb-inside');
+                    const dbgOutside = document.querySelector('#dbg-exitb-outside');
+                    const dbgBlocker = document.querySelector('#dbg-exitb-blocker');
+                    const dbgDist = document.querySelector('#dbg-exitb-dist');
+                    const dbgAssembly = document.querySelector('#dbg-exitb-assembly');
+
+                    if (dbgDoor) dbgDoor.innerText = isDoorOpen ? 'OPEN' : 'CLOSED';
+                    if (dbgCol) dbgCol.innerText = isDoorColActive ? 'ON' : 'OFF';
+                    if (dbgInside) dbgInside.innerText = isInside ? 'YES' : 'NO';
+                    if (dbgOutside) dbgOutside.innerText = isOutside ? 'YES' : 'NO';
+                    if (dbgBlocker) dbgBlocker.innerText = blockingCollider ? blockingCollider.id : 'NONE';
+                    if (dbgDist) dbgDist.innerText = `${distToExitB.toFixed(1)}m`;
+                    if (dbgAssembly) dbgAssembly.innerText = isAssembly ? 'REACHED' : 'NOT REACHED';
+
                     let zone = 'Room 101';
-                    if (p.z < -26) zone = 'Exterior Courtyard / Assembly';
+                    if (p.x > 24.0 && p.z <= -13.0 && p.z >= -26.0) zone = 'Exterior Fire Escape Path';
+                    else if (p.z < -26) zone = 'Exterior Courtyard / Assembly';
                     else if (p.z < -18) zone = 'Main Lobby';
                     else if (p.x > 3 && p.z < -12) zone = 'Emergency Exit B Stairwell';
                     else if (p.z < -2) zone = 'Main Corridor';
@@ -2510,7 +2744,7 @@
                 document.querySelector('#smoke-meter-fill').style.width = '0%';
                 document.querySelector('#hud-alarm').innerText = 'Alarm: Standby';
                 document.querySelector('#hud-alarm').style.color = '#94a3b8';
-                document.querySelector('#hud-extinguisher-box').style.display = 'none';
+                updateExtinguisherHUD();
 
                 document.querySelector('#results-board').setAttribute('visible', 'false');
                 document.querySelector('#onboarding-board').setAttribute('visible', 'true');
