@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
     <title>VR Fire Evacuation Training Simulator — Meta Quest 3S</title>
-    <meta name="description" content="Advanced Virtual Reality Fire Evacuation Training Simulator for Meta Quest 3S. Experience real-world emergency decision making, physical collisions, dynamic fire hazards, functional safety gear, and safe evacuation.">
+    <meta name="description" content="Realistic Virtual Reality Fire Evacuation Training Simulator for Meta Quest 3S and Desktop. Robust interactions, physical collision, functional alarm & extinguisher, and safe evacuation.">
     <!-- A-Frame 1.7.0 WebXR Framework -->
     <script src="https://aframe.io/releases/1.7.0/aframe.min.js"></script>
     <style>
@@ -22,7 +22,7 @@
             bottom: 16px;
             left: 50%;
             transform: translateX(-50%);
-            background: rgba(11, 15, 25, 0.88);
+            background: rgba(11, 15, 25, 0.9);
             backdrop-filter: blur(8px);
             border: 1px solid rgba(255, 255, 255, 0.15);
             border-radius: 24px;
@@ -35,7 +35,6 @@
             z-index: 9999;
             box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
             pointer-events: none;
-            transition: opacity 0.4s ease;
         }
         .hud-badge {
             background: #ef4444;
@@ -60,9 +59,9 @@
             position: fixed;
             top: 16px;
             left: 16px;
-            background: rgba(15, 23, 42, 0.88);
+            background: rgba(15, 23, 42, 0.9);
             backdrop-filter: blur(8px);
-            border: 1px solid rgba(255, 255, 255, 0.12);
+            border: 1px solid rgba(255, 255, 255, 0.14);
             border-radius: 12px;
             padding: 12px 18px;
             color: #f8fafc;
@@ -93,10 +92,31 @@
             height: 100%;
             width: 0%;
             background: #10b981;
-            transition: width 0.3s ease, background 0.3s ease;
+            transition: width 0.3s ease;
         }
 
-        /* Screen-space Dynamic Smoke & Heat Overlay */
+        /* Interaction Prompt Floating Badge (Center Screen) */
+        #interaction-prompt {
+            position: fixed;
+            top: 58%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(15, 23, 42, 0.95);
+            border: 2px solid #38bdf8;
+            border-radius: 20px;
+            padding: 8px 20px;
+            color: #ffffff;
+            font-size: 14px;
+            font-weight: 700;
+            letter-spacing: 0.5px;
+            z-index: 9999;
+            pointer-events: none;
+            display: none;
+            box-shadow: 0 0 20px rgba(56, 189, 248, 0.4);
+            text-transform: uppercase;
+        }
+
+        /* Smoke Vignette */
         #smoke-overlay {
             position: fixed;
             top: 0;
@@ -109,12 +129,12 @@
             transition: background 0.5s ease;
         }
 
-        /* Real-Time Developer Diagnostics Overlay (Key 'D') */
+        /* Real-Time Developer Diagnostics Overlay (Toggled with F3 / F10) */
         #debug-overlay {
             position: fixed;
             top: 16px;
             right: 16px;
-            background: rgba(0, 0, 0, 0.88);
+            background: rgba(0, 0, 0, 0.92);
             border: 1px solid #22c55e;
             border-radius: 8px;
             padding: 12px 16px;
@@ -144,7 +164,7 @@
         <span>Look: <span class="hud-key">Mouse</span></span>
         <span>Interact: <span class="hud-key">Click / E</span></span>
         <span>Restart: <span class="hud-key">R</span></span>
-        <span>Debug: <span class="hud-key">D</span></span>
+        <span>Debug: <span class="hud-key">F3</span></span>
     </div>
 
     <!-- Live Status HUD -->
@@ -161,25 +181,29 @@
         </div>
     </div>
 
-    <!-- Screen-space Smoke/Heat Vignette -->
+    <!-- Dynamic 2D Interaction Prompt Badge -->
+    <div id="interaction-prompt">OPEN DOOR</div>
+
+    <!-- Dynamic Smoke & Heat Overlay -->
     <div id="smoke-overlay"></div>
 
-    <!-- Real-time Developer Diagnostics (Toggle with 'D') -->
+    <!-- Developer Diagnostics (Toggle with F3 or F10) -->
     <div id="debug-overlay">
-        <strong>=== SYSTEM DIAGNOSTICS [D] ===</strong><br>
+        <strong>=== SIMULATION DEBUG [F3] ===</strong><br>
         Scenario: <span id="dbg-scenario">1</span><br>
-        Player Pos: <span id="dbg-pos">0.0, 0.0</span><br>
+        Player Position: <span id="dbg-pos">0.0, 0.0</span><br>
         Zone: <span id="dbg-zone">Room 101</span><br>
-        Alarm State: <span id="dbg-alarm">STANDBY</span><br>
-        Colliders Active: <span id="dbg-colliders">0</span><br>
+        Alarm: <span id="dbg-alarm">STANDBY</span><br>
+        Door 101: <span id="dbg-door101">CLOSED</span><br>
         Extinguisher: <span id="dbg-ext">AVAILABLE (100%)</span><br>
         Trash Fire HP: <span id="dbg-fire-hp">100%</span><br>
         Smoke Exposure: <span id="dbg-smoke">0s</span><br>
-        Wrong Routes: <span id="dbg-wrong">0</span>
+        Current Target: <span id="dbg-target">NONE</span><br>
+        Active Colliders: <span id="dbg-colliders">0</span>
     </div>
 
     <!-- ========================================================================= -->
-    <!-- PROCEDURAL WEB AUDIO API SYNTHESIZER (100% Self-Contained)                -->
+    <!-- PROCEDURAL WEB AUDIO API SYNTHESIZER                                      -->
     <!-- ========================================================================= -->
     <script>
     const SoundEngine = (function() {
@@ -248,7 +272,7 @@
                 }
             },
 
-            // Procedural Fire Crackling (bandpass filtered pink/white noise with pops)
+            // Procedural Fire Crackling
             startFireSound: function() {
                 const c = getContext();
                 if (!c || fireCrackleNode) return;
@@ -423,11 +447,10 @@
     <script>
     const CollisionEngine = (function() {
         const obstacles = [];
-        const PLAYER_RADIUS = 0.38;
+        const PLAYER_RADIUS = 0.35; // Comfortable radius for doorways
 
         return {
             registerBox: function(id, minX, maxX, minZ, maxZ, isDynamic = false) {
-                // Ensure min < max
                 const box = {
                     id: id,
                     minX: Math.min(minX, maxX),
@@ -448,19 +471,20 @@
 
             setBoxActive: function(id, active) {
                 const box = obstacles.find(b => b.id === id);
-                if (box) box.active = active;
+                if (box) {
+                    box.active = active;
+                    console.log(`[COLLISION] Collider '${id}' active = ${active}`);
+                }
             },
 
             getObstacleCount: function() {
                 return obstacles.filter(b => b.active).length;
             },
 
-            // Check if player circle intersects any active obstacle
             isColliding: function(x, z) {
                 for (let i = 0; i < obstacles.length; i++) {
                     const b = obstacles[i];
                     if (!b.active) continue;
-                    // Find closest point on AABB to circle center
                     const closestX = Math.max(b.minX, Math.min(x, b.maxX));
                     const closestZ = Math.max(b.minZ, Math.min(z, b.maxZ));
                     const dx = x - closestX;
@@ -472,17 +496,16 @@
                 return null;
             },
 
-            // Resolve move with smooth wall-sliding along orthogonal axes
             resolveMove: function(currX, currZ, targetX, targetZ) {
                 let resolvedX = currX;
                 let resolvedZ = currZ;
 
-                // 1. Try X movement alone
+                // Test X independently for smooth wall-sliding
                 if (!this.isColliding(targetX, currZ)) {
                     resolvedX = targetX;
                 }
 
-                // 2. Try Z movement alone
+                // Test Z independently
                 if (!this.isColliding(resolvedX, targetZ)) {
                     resolvedZ = targetZ;
                 }
@@ -492,10 +515,10 @@
         };
     })();
 
-    // Unified Locomotion Component (Meta Quest 3S Thumbsticks + Desktop WASD)
+    // Player Locomotion Component (Quest 3S Left Thumbstick + Desktop WASD)
     AFRAME.registerComponent('player-locomotion', {
         schema: {
-            speed: { type: 'number', default: 0.075 },
+            speed: { type: 'number', default: 0.08 },
             snapAngle: { type: 'number', default: 45 }
         },
         init: function() {
@@ -504,18 +527,21 @@
             this.leftHand = document.querySelector('#leftHand');
             this.rightHand = document.querySelector('#rightHand');
             this.canSnap = true;
-            this.speedModifier = 1.0;
 
-            // Desktop Keyboard Input State
+            // Desktop Keyboard Input (W, A, S, D strictly movement)
             this.keys = { KeyW: false, KeyA: false, KeyS: false, KeyD: false };
             window.addEventListener('keydown', (e) => {
-                if (this.keys.hasOwnProperty(e.code)) this.keys[e.code] = true;
+                if (this.keys.hasOwnProperty(e.code)) {
+                    this.keys[e.code] = true;
+                }
             });
             window.addEventListener('keyup', (e) => {
-                if (this.keys.hasOwnProperty(e.code)) this.keys[e.code] = false;
+                if (this.keys.hasOwnProperty(e.code)) {
+                    this.keys[e.code] = false;
+                }
             });
 
-            // VR Right Thumbstick Snap Turning
+            // VR Right Thumbstick Snap Turn
             this.onAxisMove = this.onAxisMove.bind(this);
             if (this.rightHand) this.rightHand.addEventListener('axismove', this.onAxisMove);
         },
@@ -534,14 +560,14 @@
                         y: rot.y + (dir * this.data.snapAngle),
                         z: rot.z
                     });
-                    setTimeout(() => { this.canSnap = true; }, 320);
+                    setTimeout(() => { this.canSnap = true; }, 300);
                 }
             } else if (Math.abs(xVal) < 0.2) {
                 this.canSnap = true;
             }
         },
 
-        tick: function(time, delta) {
+        tick: function() {
             if (!this.cameraEl) return;
             const rigPos = this.rigEl.getAttribute('position');
             const camRot = this.cameraEl.getAttribute('rotation');
@@ -579,10 +605,9 @@
                 const normX = (moveX / len);
                 const normZ = (moveZ / len);
 
-                const currentSpeed = this.data.speed * this.speedModifier;
                 const deltaVec = new THREE.Vector3()
-                    .addScaledVector(forward, -normZ * currentSpeed)
-                    .addScaledVector(right, normX * currentSpeed);
+                    .addScaledVector(forward, -normZ * this.data.speed)
+                    .addScaledVector(right, normX * this.data.speed);
 
                 const targetX = rigPos.x + deltaVec.x;
                 const targetZ = rigPos.z + deltaVec.z;
@@ -593,43 +618,187 @@
             }
         }
     });
+    </script>
 
-    // Interactive Door Component with Collision Synchronizer
-    AFRAME.registerComponent('fire-door', {
+    <!-- ========================================================================= -->
+    <!-- UNIFIED INTERACTION MANAGER & INTERACTABLE COMPONENT                      -->
+    <!-- ========================================================================= -->
+    <script>
+    const InteractionManager = (function() {
+        let currentTarget = null;
+        const promptEl = document.querySelector('#interaction-prompt');
+
+        return {
+            getCurrentTarget: function() { return currentTarget; },
+
+            onRayEnter: function(el) {
+                const interactable = el.components['interactable'];
+                if (!interactable) return;
+
+                currentTarget = el;
+                interactable.setHighlight(true);
+
+                const text = interactable.getPromptText();
+                if (promptEl) {
+                    promptEl.innerText = text;
+                    promptEl.style.display = 'block';
+                }
+
+                const dbgTarget = document.querySelector('#dbg-target');
+                if (dbgTarget) dbgTarget.innerText = `${el.id || 'Object'} (${text})`;
+            },
+
+            onRayLeave: function(el) {
+                if (currentTarget === el) {
+                    const interactable = el.components['interactable'];
+                    if (interactable) interactable.setHighlight(false);
+
+                    currentTarget = null;
+                    if (promptEl) promptEl.style.display = 'none';
+
+                    const dbgTarget = document.querySelector('#dbg-target');
+                    if (dbgTarget) dbgTarget.innerText = 'NONE';
+                }
+            },
+
+            executeCurrent: function() {
+                if (currentTarget && currentTarget.components['interactable']) {
+                    currentTarget.components['interactable'].execute();
+                }
+            }
+        };
+    })();
+
+    // Unified Interactable Component attached to all interactive objects
+    AFRAME.registerComponent('interactable', {
+        schema: {
+            actionText: { type: 'string', default: 'INTERACT' },
+            highlightColor: { type: 'color', default: '#38bdf8' }
+        },
+        init: function() {
+            this.el.classList.add('clickable');
+            this.meshEls = this.el.querySelectorAll('a-box, a-cylinder, a-plane');
+            this.savedColors = [];
+
+            this.onRayEnter = this.onRayEnter.bind(this);
+            this.onRayLeave = this.onRayLeave.bind(this);
+            this.onClick = this.onClick.bind(this);
+
+            this.el.addEventListener('raycaster-intersected', this.onRayEnter);
+            this.el.addEventListener('raycaster-intersected-cleared', this.onRayLeave);
+            this.el.addEventListener('mouseenter', this.onRayEnter);
+            this.el.addEventListener('mouseleave', this.onRayLeave);
+            this.el.addEventListener('click', this.onClick);
+        },
+
+        getPromptText: function() {
+            if (this.el.components['unified-door']) {
+                return this.el.components['unified-door'].data.isOpen ? 'CLOSE DOOR' : 'OPEN DOOR';
+            }
+            if (this.el.components['fire-alarm-station']) {
+                return 'PULL FIRE ALARM';
+            }
+            if (this.el.components['fire-extinguisher']) {
+                return this.el.components['fire-extinguisher'].state === 'AVAILABLE' ? 'GRAB EXTINGUISHER' : 'SPRAY EXTINGUISHER';
+            }
+            return this.data.actionText;
+        },
+
+        setHighlight: function(active) {
+            // Emissive/color highlight on primary child meshes
+            this.meshEls.forEach((m, idx) => {
+                if (active) {
+                    if (this.savedColors[idx] === undefined) {
+                        this.savedColors[idx] = m.getAttribute('material') ? m.getAttribute('material').emissive : '#000000';
+                    }
+                    m.setAttribute('material', 'emissive', this.data.highlightColor);
+                    m.setAttribute('material', 'emissiveIntensity', '0.4');
+                } else {
+                    const orig = this.savedColors[idx] || '#000000';
+                    m.setAttribute('material', 'emissive', orig);
+                    m.setAttribute('material', 'emissiveIntensity', orig === '#000000' ? '0.0' : '0.8');
+                }
+            });
+        },
+
+        onRayEnter: function() { InteractionManager.onRayEnter(this.el); },
+        onRayLeave: function() { InteractionManager.onRayLeave(this.el); },
+
+        onClick: function(e) {
+            if (e) e.stopPropagation();
+            this.execute();
+        },
+
+        execute: function() {
+            console.log(`[INTERACTION] Executing on entity '${this.el.id}'`);
+            if (this.el.components['unified-door']) {
+                this.el.components['unified-door'].toggle();
+            } else if (this.el.components['fire-alarm-station']) {
+                this.el.components['fire-alarm-station'].pull();
+            } else if (this.el.components['fire-extinguisher']) {
+                this.el.components['fire-extinguisher'].interact();
+            } else {
+                this.el.emit('interaction-trigger');
+            }
+        }
+    });
+
+    // Unified Reliable Door Component
+    AFRAME.registerComponent('unified-door', {
         schema: {
             isOpen: { type: 'boolean', default: false },
-            openAngle: { type: 'number', default: 90 },
+            openAngle: { type: 'number', default: -95 },
             isBlocked: { type: 'boolean', default: false },
+            isFireBlocked: { type: 'boolean', default: false },
             blockReason: { type: 'string', default: 'This door is locked or obstructed.' },
             colliderId: { type: 'string', default: '' }
         },
         init: function() {
             this.initialY = this.el.getAttribute('rotation').y;
-            this.interact = this.interact.bind(this);
-            this.el.addEventListener('click', this.interact);
+            this.isAnimating = false;
         },
-        interact: function() {
+
+        toggle: function() {
+            if (this.isAnimating) return;
+
+            if (this.data.isFireBlocked) {
+                SoundEngine.playWarningTone();
+                SimulationManager.showVRToast("🔥 TOO DANGEROUS!\nMain exit engulfed in flames!\nSeek alternate exit.", 2800);
+                SimulationManager.trackWrongDecision('Attempted to pass through structural fire');
+                return;
+            }
+
             if (this.data.isBlocked) {
                 SoundEngine.playWarningTone();
                 SimulationManager.showVRToast(`⚠️ DOOR BLOCKED\n${this.data.blockReason}`, 2600);
-                SimulationManager.trackWrongDecision('Attempted to pass blocked/hazardous door');
+                SimulationManager.trackWrongDecision('Attempted to open blocked door');
                 return;
             }
 
             this.data.isOpen = !this.data.isOpen;
+            this.isAnimating = true;
             SoundEngine.playDoorOpen();
-            const targetRot = this.data.isOpen ? (this.initialY + this.data.openAngle) : this.initialY;
+
+            const targetY = this.data.isOpen ? (this.initialY + this.data.openAngle) : this.initialY;
             this.el.setAttribute('animation', {
                 property: 'rotation',
-                to: `0 ${targetRot} 0`,
-                dur: 500,
+                to: `0 ${targetY} 0`,
+                dur: 450,
                 easing: 'easeOutQuad'
             });
 
-            // Update physical collision
+            // Update Physical Collision Collider
             if (this.data.colliderId) {
                 CollisionEngine.setBoxActive(this.data.colliderId, !this.data.isOpen);
             }
+
+            setTimeout(() => {
+                this.isAnimating = false;
+                const dbgDoor = document.querySelector('#dbg-door101');
+                if (this.el.id === 'door-101' && dbgDoor) {
+                    dbgDoor.innerText = this.data.isOpen ? 'OPEN' : 'CLOSED';
+                }
+            }, 460);
 
             SimulationManager.onDoorInteracted(this.el.id);
         }
@@ -640,10 +809,8 @@
         init: function() {
             this.isPulled = false;
             this.handleEl = this.el.querySelector('.alarm-handle');
-            this.triggerPull = this.triggerPull.bind(this);
-            this.el.addEventListener('click', this.triggerPull);
         },
-        triggerPull: function() {
+        pull: function() {
             if (this.isPulled) return;
             this.isPulled = true;
             SoundEngine.playClick();
@@ -659,21 +826,20 @@
         }
     });
 
-    // Stateful Fire Extinguisher Component (AVAILABLE, HELD, SPRAYING, EMPTY)
+    // Stateful Fire Extinguisher Component (AVAILABLE -> HELD -> SPRAYING -> EMPTY)
     AFRAME.registerComponent('fire-extinguisher', {
         init: function() {
             this.state = 'AVAILABLE';
-            this.capacity = 100.0; // Capacity from 100% to 0%
+            this.capacity = 100.0;
             this.foamParticleEl = this.el.querySelector('.extinguisher-foam');
-            this.gaugeFillEl = this.el.querySelector('.gauge-indicator');
+        },
 
-            this.el.addEventListener('click', () => {
-                if (this.state === 'AVAILABLE') {
-                    this.equip();
-                } else if (this.state === 'HELD' || this.state === 'SPRAYING') {
-                    this.discharge();
-                }
-            });
+        interact: function() {
+            if (this.state === 'AVAILABLE') {
+                this.equip();
+            } else if (this.state === 'HELD' || this.state === 'SPRAYING') {
+                this.discharge();
+            }
         },
 
         equip: function() {
@@ -691,18 +857,21 @@
             document.querySelector('#hud-extinguisher-box').style.display = 'block';
             SimulationManager.showVRToast("🧯 Extinguisher Equipped!\nClick / Trigger to discharge.", 3000);
             SimulationManager.trackExtinguisherEquipped();
+
+            const dbgExt = document.querySelector('#dbg-ext');
+            if (dbgExt) dbgExt.innerText = `HELD (${Math.round(this.capacity)}%)`;
         },
 
         discharge: function() {
             if (this.capacity <= 0) {
                 this.state = 'EMPTY';
                 SoundEngine.playWarningTone();
-                SimulationManager.showVRToast("⚠️ EXTINGUISHER EMPTY!\nEvacuate immediately!", 2000);
+                SimulationManager.showVRToast("⚠️ EXTINGUISHER EMPTY!\nEvacuate immediately!", 2200);
                 return;
             }
 
             this.state = 'SPRAYING';
-            this.capacity = Math.max(0, this.capacity - 15);
+            this.capacity = Math.max(0, this.capacity - 18);
             SoundEngine.playExtinguisherHiss(0.6);
 
             if (this.foamParticleEl) {
@@ -718,14 +887,14 @@
             document.querySelector('#hud-ext-val').innerText = `${Math.round(this.capacity)}%`;
             document.querySelector('#ext-meter-fill').style.width = `${Math.round(this.capacity)}%`;
 
-            // Test Aim against Small Trash Fire vs Large Lobby Fire
+            // Spray targeting check
             const rigPos = document.querySelector('#rig').getAttribute('position');
             const distToTrash = Math.hypot(rigPos.x - (-2.8), rigPos.z - (-0.8));
-            const distToLobbyFire = Math.hypot(rigPos.x - 0.0, rigPos.z - (-23.0));
+            const distToLobbyFire = Math.hypot(rigPos.x - 0.0, rigPos.z - (-24.5));
 
-            if (distToTrash < 3.2 && SimulationManager.trashFireHP > 0) {
+            if (distToTrash < 3.5 && SimulationManager.trashFireHP > 0) {
                 SimulationManager.suppressTrashFire(35);
-            } else if (distToLobbyFire < 7.5) {
+            } else if (distToLobbyFire < 8.0) {
                 SoundEngine.playWarningTone();
                 SimulationManager.showVRToast("⚠️ FIRE TOO LARGE!\nDo NOT fight large structural fires.\nEVACUATE IMMEDIATELY!", 3500);
                 SimulationManager.trackWrongDecision('Attempted to fight uncontrollable structural fire');
@@ -733,11 +902,9 @@
         }
     });
 
-    // Procedural Fire Shader & Flicker Component
+    // Procedural Fire Shader Component
     AFRAME.registerComponent('flicker-fire', {
-        schema: {
-            intensity: { type: 'number', default: 2.0 }
-        },
+        schema: { intensity: { type: 'number', default: 2.0 } },
         init: function() {
             this.lightEl = this.el.querySelector('a-light');
             this.flameCore = this.el.querySelector('.flame-core');
@@ -747,9 +914,7 @@
         tick: function(time, delta) {
             this.time += delta * 0.007;
             const flicker = Math.sin(this.time * 6.0) * 0.25 + Math.cos(this.time * 13.0) * 0.15 + 0.9;
-            if (this.lightEl) {
-                this.lightEl.setAttribute('light', 'intensity', this.data.intensity * flicker);
-            }
+            if (this.lightEl) this.lightEl.setAttribute('light', 'intensity', this.data.intensity * flicker);
             if (this.flameCore) {
                 const s = 1.0 + Math.sin(this.time * 8.0) * 0.12;
                 this.flameCore.setAttribute('scale', `${s} ${s * (1 + Math.cos(this.time * 11.0) * 0.15)} ${s}`);
@@ -769,10 +934,8 @@
              vr-mode-ui="enabled: true"
              background="color: #0d1117">
 
-        <!-- ASSET DEFINITIONS -->
         <a-assets>
             <a-mixin id="wall-mat" material="color: #cbd5e1; roughness: 0.88; metalness: 0.02"></a-mixin>
-            <a-mixin id="wall-accent" material="color: #94a3b8; roughness: 0.85"></a-mixin>
             <a-mixin id="floor-tile" material="color: #334155; roughness: 0.7; metalness: 0.08"></a-mixin>
             <a-mixin id="ceiling-tile" material="color: #64748b; roughness: 0.9"></a-mixin>
             <a-mixin id="door-wood" material="color: #78350f; roughness: 0.65"></a-mixin>
@@ -784,41 +947,42 @@
         <!-- VR CAMERA RIG & CONTROLLERS                                       -->
         <!-- ================================================================= -->
         <a-entity id="rig" position="0 0 0" player-locomotion>
+            <!-- Camera (Head) -->
             <a-entity id="cam" camera position="0 1.6 0" look-controls="pointerLockEnabled: false">
-                <!-- Desktop Cursor Reticle -->
+                <!-- Desktop Reticle Cursor with generous raycast range -->
                 <a-cursor id="desktop-cursor"
                           color="#38bdf8"
                           fuse="false"
-                          raycaster="objects: .clickable; far: 14"
+                          raycaster="objects: .clickable; far: 12"
                           animation__click="property: scale; startEvents: click; easing: easeInCubic; dur: 140; from: 0.1 0.1 0.1; to: 1 1 1">
                 </a-cursor>
 
-                <!-- VR Floating Toast Notification -->
+                <!-- In-VR Floating Toast Notification -->
                 <a-entity id="vr-toast" position="0 0.15 -1.3" visible="false">
-                    <a-plane width="1.7" height="0.6" color="#0f172a" material="opacity: 0.92; transparent: true">
+                    <a-plane width="1.8" height="0.6" color="#0f172a" material="opacity: 0.92; transparent: true">
                         <a-text id="vr-toast-text" value="NOTIFICATION" align="center" color="#fbbf24"
-                                width="2.4" position="0 0 0.01" wrap-count="32" font="roboto"></a-text>
+                                width="2.5" position="0 0 0.01" wrap-count="32" font="roboto"></a-text>
                     </a-plane>
                 </a-entity>
 
-                <!-- VR In-Headset Smoke Density Darkening Plane -->
+                <!-- VR Smoke Screen Darkening Plane -->
                 <a-plane id="vr-smoke-plane" position="0 0 -0.22" width="1.4" height="1.4"
                          material="color: #201309; opacity: 0; transparent: true; depthTest: false" visible="false">
                 </a-plane>
             </a-entity>
 
-            <!-- Meta Quest 3S Left Hand (Locomotion & Secondary ray) -->
+            <!-- Meta Quest 3S Left Hand (Locomotion & Pointer) -->
             <a-entity id="leftHand"
                       oculus-touch-controls="hand: left"
                       laser-controls="hand: left"
-                      raycaster="objects: .clickable; far: 9; lineColor: #38bdf8; lineOpacity: 0.75">
+                      raycaster="objects: .clickable; far: 8; lineColor: #38bdf8; lineOpacity: 0.75">
             </a-entity>
 
             <!-- Meta Quest 3S Right Hand (Primary Interaction & Snap Turn) -->
             <a-entity id="rightHand"
                       oculus-touch-controls="hand: right"
                       laser-controls="hand: right"
-                      raycaster="objects: .clickable; far: 9; lineColor: #f43f5e; lineOpacity: 0.85">
+                      raycaster="objects: .clickable; far: 8; lineColor: #f43f5e; lineOpacity: 0.85">
             </a-entity>
         </a-entity>
 
@@ -827,7 +991,6 @@
         <!-- ================================================================= -->
         <a-light id="ambient-light" type="ambient" color="#94a3b8" intensity="0.52"></a-light>
 
-        <!-- Fluorescent Ceiling Lighting Grid -->
         <a-entity id="building-lights">
             <a-light type="point" color="#f8fafc" intensity="0.65" distance="9" position="0 2.8 1.5"></a-light>
             <a-light type="point" color="#f8fafc" intensity="0.65" distance="9" position="0 2.8 -4"></a-light>
@@ -840,7 +1003,7 @@
             <a-light type="point" color="#f8fafc" intensity="0.65" distance="9" position="20 2.8 -15"></a-light>
         </a-entity>
 
-        <!-- Emergency Red Flashing Strobes -->
+        <!-- Flashing Emergency Red Strobes -->
         <a-entity id="emergency-strobes" visible="false">
             <a-light type="point" color="#ef4444" intensity="0" distance="14" position="0 2.7 -4"></a-light>
             <a-light type="point" color="#ef4444" intensity="0" distance="14" position="0 2.7 -16"></a-light>
@@ -849,10 +1012,10 @@
         </a-entity>
 
         <!-- ================================================================= -->
-        <!-- BUILDING ARCHITECTURE: GROUND FLOOR                               -->
+        <!-- BUILDING ARCHITECTURE                                             -->
         <!-- ================================================================= -->
 
-        <!-- 1. STARTING ROOM: Room 101 (Student Lab / Dorm) -->
+        <!-- 1. STARTING ROOM: Room 101 (Clear 1.5m Doorway Opening) -->
         <a-entity id="room-101">
             <!-- Floor & Ceiling -->
             <a-plane position="0 0 1" rotation="-90 0 0" width="7" height="6" mixin="floor-tile"></a-plane>
@@ -861,29 +1024,43 @@
             <a-plane position="0 1.5 4" rotation="0 180 0" width="7" height="3" mixin="wall-mat"></a-plane>
             <!-- West Wall -->
             <a-plane position="-3.5 1.5 1" rotation="0 90 0" width="6" height="3" mixin="wall-mat"></a-plane>
-            <!-- East Wall (Shared with Room 102) -->
+            <!-- East Wall -->
             <a-plane position="3.5 1.5 1" rotation="0 -90 0" width="6" height="3" mixin="wall-mat"></a-plane>
-            <!-- North Wall (Corridor boundary with doorway) -->
-            <a-plane position="-2.25 1.5 -2" width="2.5" height="3" mixin="wall-mat"></a-plane>
-            <a-plane position="2.25 1.5 -2" width="2.5" height="3" mixin="wall-mat"></a-plane>
-            <a-plane position="0 2.6 -2" width="2.0" height="0.8" mixin="wall-mat"></a-plane>
+
+            <!-- North Wall: 1.5m wide doorway centered at X = 0 (from -0.75 to 0.75) -->
+            <!-- Left wall segment: X in [-3.5, -0.75], center = -2.125, width = 2.75 -->
+            <a-plane position="-2.125 1.5 -2.0" width="2.75" height="3" mixin="wall-mat"></a-plane>
+            <!-- Right wall segment: X in [0.75, 3.5], center = 2.125, width = 2.75 -->
+            <a-plane position="2.125 1.5 -2.0" width="2.75" height="3" mixin="wall-mat"></a-plane>
+            <!-- Top header above doorway: from Y = 2.2 to 3.0, center = 0, width = 1.5 -->
+            <a-plane position="0 2.6 -2.0" width="1.5" height="0.8" mixin="wall-mat"></a-plane>
+
+            <!-- Room 101 Doorway Frame Visuals -->
+            <a-box position="-0.78 1.1 -2.0" width="0.06" height="2.2" depth="0.12" color="#1e293b"></a-box>
+            <a-box position="0.78 1.1 -2.0" width="0.06" height="2.2" depth="0.12" color="#1e293b"></a-box>
+            <a-box position="0 2.22 -2.0" width="1.6" height="0.06" depth="0.12" color="#1e293b"></a-box>
 
             <!-- Room Plaque -->
-            <a-plane position="1.3 1.8 -2.01" rotation="0 180 0" width="0.5" height="0.2" color="#1e293b">
+            <a-plane position="1.1 1.8 -2.01" rotation="0 180 0" width="0.5" height="0.2" color="#1e293b">
                 <a-text value="ROOM 101" align="center" width="1.2" color="#f8fafc"></a-text>
             </a-plane>
 
-            <!-- Room 101 Door (Interactive) -->
-            <a-entity id="door-101" position="-1.0 0 -2.0" fire-door="isOpen: false; openAngle: -95; colliderId: col-door-101" class="clickable">
-                <a-box position="0.5 1.1 0.02" width="1.0" height="2.2" depth="0.06" mixin="door-wood"></a-box>
-                <a-cylinder position="0.9 1.1 0.06" rotation="90 0 0" radius="0.025" height="0.12" color="#f59e0b"></a-cylinder>
+            <!-- Room 101 Door (Interactive, Pivot at X = -0.75, spans to X = +0.75) -->
+            <a-entity id="door-101" position="-0.75 0 -2.0"
+                      unified-door="isOpen: false; openAngle: -95; colliderId: col-door-101"
+                      interactable="actionText: OPEN DOOR; highlightColor: #38bdf8">
+                <!-- Door slab: width 1.5m, height 2.2m, centered at x = 0.75 -->
+                <a-box position="0.75 1.1 0.02" width="1.5" height="2.2" depth="0.06" mixin="door-wood"></a-box>
+                <!-- Large brass door handle for easy target identification -->
+                <a-cylinder position="1.35 1.1 0.06" rotation="90 0 0" radius="0.03" height="0.12" color="#f59e0b"></a-cylinder>
+                <a-box position="1.32 1.1 0.12" width="0.14" height="0.03" depth="0.03" color="#f59e0b"></a-box>
             </a-entity>
 
-            <!-- Props: Desk, Chair, Computer, Bookshelf -->
+            <!-- Room Furniture: Study Desk, Chair, Computer, Bookshelf -->
             <a-box position="-2.3 0.38 0.5" width="1.2" height="0.75" depth="0.8" color="#475569"></a-box>
             <a-box position="-2.3 0.88 0.5" width="0.45" height="0.28" depth="0.02" color="#0f172a"></a-box>
             <a-box position="-1.5 0.25 0.5" width="0.45" height="0.5" depth="0.45" color="#1e293b"></a-box>
-            <a-box position="2.8 1.0 2.5" width="1.0" height="2.0" depth="0.4" color="#334155"></a-box> <!-- Locker -->
+            <a-box position="2.8 1.0 2.5" width="1.0" height="2.0" depth="0.4" color="#334155"></a-box>
 
             <!-- Trash Can (Origin of small fire in Scenario 1) -->
             <a-cylinder id="trash-can" position="-2.8 0.22 -0.8" radius="0.22" height="0.45" color="#64748b"></a-cylinder>
@@ -895,7 +1072,7 @@
                 <a-light type="point" color="#ff7700" intensity="1.3" distance="4"></a-light>
             </a-entity>
 
-            <!-- 3D ONBOARDING & SCENARIO SELECTION BOARD -->
+            <!-- 3D Onboarding Board -->
             <a-entity id="onboarding-board" position="1.6 1.5 0" rotation="0 -70 0">
                 <a-plane width="2.3" height="1.9" color="#0f172a" material="opacity: 0.95">
                     <a-plane width="2.26" height="0.32" position="0 0.76 0.01" color="#1e293b">
@@ -906,24 +1083,26 @@
                             position="0 0.44 0.01" align="center" width="2.05" wrap-count="38" color="#cbd5e1"></a-text>
 
                     <!-- Scenario Select Buttons -->
-                    <a-plane id="btn-scenario-1" position="-0.7 -0.05 0.01" width="0.65" height="0.32" color="#10b981" class="clickable">
+                    <a-plane id="btn-scenario-1" position="-0.7 -0.05 0.01" width="0.65" height="0.32" color="#10b981"
+                             interactable="actionText: SELECT SCENARIO 1">
                         <a-text value="1. BASIC\n(Clear Lobby)" align="center" width="1.3" color="#ffffff"></a-text>
                     </a-plane>
 
-                    <a-plane id="btn-scenario-2" position="0 -0.05 0.01" width="0.65" height="0.32" color="#334155" class="clickable">
+                    <a-plane id="btn-scenario-2" position="0 -0.05 0.01" width="0.65" height="0.32" color="#334155"
+                             interactable="actionText: SELECT SCENARIO 2">
                         <a-text value="2. INTERMEDIATE\n(Lobby Blocked)" align="center" width="1.3" color="#ffffff"></a-text>
                     </a-plane>
 
-                    <a-plane id="btn-scenario-3" position="0.7 -0.05 0.01" width="0.65" height="0.32" color="#334155" class="clickable">
+                    <a-plane id="btn-scenario-3" position="0.7 -0.05 0.01" width="0.65" height="0.32" color="#334155"
+                             interactable="actionText: SELECT SCENARIO 3">
                         <a-text value="3. ADVANCED\n(Severe Hazards)" align="center" width="1.3" color="#ffffff"></a-text>
                     </a-plane>
 
-                    <!-- Scenario Description -->
                     <a-text id="scenario-desc-text" value="Selected: 1. BASIC (Clear Lobby)\nSmall trash fire in Room 101. Main lobby exit is clear."
                             position="0 -0.38 0.01" align="center" width="2.0" wrap-count="38" color="#38bdf8"></a-text>
 
-                    <!-- Start Button -->
-                    <a-plane id="btn-start-training" position="0 -0.72 0.02" width="1.6" height="0.26" color="#ef4444" class="clickable">
+                    <a-plane id="btn-start-training" position="0 -0.72 0.02" width="1.6" height="0.26" color="#ef4444"
+                             interactable="actionText: START SIMULATION">
                         <a-text value="🔥 START SIMULATION" align="center" width="2.2" color="#ffffff" font="roboto"></a-text>
                     </a-plane>
                 </a-plane>
@@ -936,16 +1115,18 @@
             <a-plane position="8 3 1" rotation="90 0 0" width="7" height="6" mixin="ceiling-tile"></a-plane>
             <a-plane position="8 1.5 4" rotation="0 180 0" width="7" height="3" mixin="wall-mat"></a-plane>
             <a-plane position="11.5 1.5 1" rotation="0 -90 0" width="6" height="3" mixin="wall-mat"></a-plane>
-            <a-plane position="6 1.5 -2" width="3" height="3" mixin="wall-mat"></a-plane>
-            <a-plane position="10 1.5 -2" width="3" height="3" mixin="wall-mat"></a-plane>
-            <a-plane position="8 2.6 -2" width="1" height="0.8" mixin="wall-mat"></a-plane>
+            <a-plane position="5.875 1.5 -2" width="2.75" height="3" mixin="wall-mat"></a-plane>
+            <a-plane position="10.125 1.5 -2" width="2.75" height="3" mixin="wall-mat"></a-plane>
+            <a-plane position="8 2.6 -2" width="1.5" height="0.8" mixin="wall-mat"></a-plane>
 
             <a-plane position="9.2 1.8 -2.01" rotation="0 180 0" width="0.5" height="0.2" color="#1e293b">
                 <a-text value="ROOM 102" align="center" width="1.2" color="#f8fafc"></a-text>
             </a-plane>
 
-            <a-entity id="door-102" position="7.5 0 -2.0" fire-door="isOpen: false; openAngle: 90; colliderId: col-door-102" class="clickable">
-                <a-box position="0.5 1.1 0.02" width="1.0" height="2.2" depth="0.06" mixin="door-wood"></a-box>
+            <a-entity id="door-102" position="7.25 0 -2.0"
+                      unified-door="isOpen: false; openAngle: 90; colliderId: col-door-102"
+                      interactable="actionText: OPEN DOOR">
+                <a-box position="0.75 1.1 0.02" width="1.5" height="2.2" depth="0.06" mixin="door-wood"></a-box>
             </a-entity>
         </a-entity>
 
@@ -954,218 +1135,207 @@
             <a-plane position="16 3 1" rotation="90 0 0" width="7" height="6" mixin="ceiling-tile"></a-plane>
             <a-plane position="16 1.5 4" rotation="0 180 0" width="7" height="3" mixin="wall-mat"></a-plane>
             <a-plane position="19.5 1.5 1" rotation="0 -90 0" width="6" height="3" mixin="wall-mat"></a-plane>
-            <a-plane position="14 1.5 -2" width="3" height="3" mixin="wall-mat"></a-plane>
-            <a-plane position="18 1.5 -2" width="3" height="3" mixin="wall-mat"></a-plane>
-            <a-plane position="16 2.6 -2" width="1" height="0.8" mixin="wall-mat"></a-plane>
+            <a-plane position="13.875 1.5 -2" width="2.75" height="3" mixin="wall-mat"></a-plane>
+            <a-plane position="18.125 1.5 -2" width="2.75" height="3" mixin="wall-mat"></a-plane>
+            <a-plane position="16 2.6 -2" width="1.5" height="0.8" mixin="wall-mat"></a-plane>
 
             <a-plane position="17.2 1.8 -2.01" rotation="0 180 0" width="0.5" height="0.2" color="#1e293b">
                 <a-text value="ROOM 103" align="center" width="1.2" color="#f8fafc"></a-text>
             </a-plane>
 
-            <a-entity id="door-103" position="15.5 0 -2.0" fire-door="isOpen: false; openAngle: 90; colliderId: col-door-103" class="clickable">
-                <a-box position="0.5 1.1 0.02" width="1.0" height="2.2" depth="0.06" mixin="door-wood"></a-box>
+            <a-entity id="door-103" position="15.25 0 -2.0"
+                      unified-door="isOpen: false; openAngle: 90; colliderId: col-door-103"
+                      interactable="actionText: OPEN DOOR">
+                <a-box position="0.75 1.1 0.02" width="1.5" height="2.2" depth="0.06" mixin="door-wood"></a-box>
             </a-entity>
         </a-entity>
 
-        <!-- 3. COMMON ROOM & STUDY AREA (West Wing) -->
+        <!-- 3. COMMON ROOM (West Wing) -->
         <a-entity id="common-room">
             <a-plane position="-9 0 2" rotation="-90 0 0" width="9" height="8" mixin="floor-tile"></a-plane>
             <a-plane position="-9 3 2" rotation="90 0 0" width="9" height="8" mixin="ceiling-tile"></a-plane>
             <a-plane position="-9 1.5 6" rotation="0 180 0" width="9" height="3" mixin="wall-mat"></a-plane>
             <a-plane position="-13.5 1.5 2" rotation="0 90 0" width="8" height="3" mixin="wall-mat"></a-plane>
-            <!-- North boundary to corridor -->
             <a-plane position="-11 1.5 -2" width="5" height="3" mixin="wall-mat"></a-plane>
-            <a-plane position="-6 1.5 -2" width="3" height="3" mixin="wall-mat"></a-plane>
-            <a-plane position="-8 2.6 -2" width="1" height="0.8" mixin="wall-mat"></a-plane>
+            <a-plane position="-5.75 1.5 -2" width="3.5" height="3" mixin="wall-mat"></a-plane>
+            <a-plane position="-8 2.6 -2" width="1.5" height="0.8" mixin="wall-mat"></a-plane>
 
             <a-plane position="-6.8 1.8 -2.01" rotation="0 180 0" width="0.7" height="0.2" color="#1e293b">
                 <a-text value="COMMON AREA" align="center" width="1.3" color="#f8fafc"></a-text>
             </a-plane>
 
-            <a-entity id="door-common" position="-8.5 0 -2.0" fire-door="isOpen: false; openAngle: -90; colliderId: col-door-common" class="clickable">
-                <a-box position="0.5 1.1 0.02" width="1.0" height="2.2" depth="0.06" mixin="door-wood"></a-box>
+            <a-entity id="door-common" position="-8.75 0 -2.0"
+                      unified-door="isOpen: false; openAngle: -90; colliderId: col-door-common"
+                      interactable="actionText: OPEN DOOR">
+                <a-box position="0.75 1.1 0.02" width="1.5" height="2.2" depth="0.06" mixin="door-wood"></a-box>
             </a-entity>
 
-            <!-- Common Room Furniture -->
             <a-box position="-9 0.45 2" width="2.5" height="0.75" depth="1.2" color="#334155"></a-box>
             <a-box position="-9 0.25 0.9" width="2.2" height="0.45" depth="0.4" color="#1e293b"></a-box>
             <a-box position="-9 0.25 3.1" width="2.2" height="0.45" depth="0.4" color="#1e293b"></a-box>
         </a-entity>
 
-        <!-- 4. MAIN CENTRAL CORRIDOR (Connecting West, East, and North Lobby) -->
+        <!-- 4. MAIN CENTRAL CORRIDOR -->
         <a-entity id="main-corridor">
-            <!-- East-West Hallway Floor & Ceiling -->
             <a-plane position="4 0 -4" rotation="-90 0 0" width="36" height="4" mixin="floor-tile"></a-plane>
             <a-plane position="4 3 -4" rotation="90 0 0" width="36" height="4" mixin="ceiling-tile"></a-plane>
 
-            <!-- North Hallway to Lobby Floor & Ceiling -->
             <a-plane position="0 0 -12" rotation="-90 0 0" width="6" height="12" mixin="floor-tile"></a-plane>
             <a-plane position="0 3 -12" rotation="90 0 0" width="6" height="12" mixin="ceiling-tile"></a-plane>
 
-            <!-- Corridor Walls with Doorways -->
-            <!-- North Corridor West Wall -->
+            <!-- Corridor Boundaries -->
             <a-plane position="-3 1.5 -12" rotation="0 90 0" width="12" height="3" mixin="wall-mat"></a-plane>
-            <!-- North Corridor East Wall (has opening to Emergency Stairwell B at Z = -15) -->
             <a-plane position="3 1.5 -9" rotation="0 -90 0" width="6" height="3" mixin="wall-mat"></a-plane>
             <a-plane position="3 2.6 -13.5" rotation="0 -90 0" width="3" height="0.8" mixin="wall-mat"></a-plane>
             <a-plane position="3 1.5 -16.5" rotation="0 -90 0" width="3" height="3" mixin="wall-mat"></a-plane>
 
-            <!-- East-West Corridor North Wall (Left of junction) -->
             <a-plane position="-8.5 1.5 -6" width="11" height="3" mixin="wall-mat"></a-plane>
-            <!-- East-West Corridor North Wall (Right of junction) -->
             <a-plane position="12.5 1.5 -6" width="19" height="3" mixin="wall-mat"></a-plane>
 
-            <!-- SAFETY HARDWARE 1: Wall-Mounted Fire Alarm Pull Station (Corridor West Wall, Z = -4.5) -->
-            <a-entity id="fire-alarm-station" position="-2.9 1.4 -4.5" rotation="0 90 0" fire-alarm-station class="clickable">
-                <a-box width="0.22" height="0.32" depth="0.08" color="#dc2626"></a-box>
-                <a-box position="0 0.1 0.042" width="0.18" height="0.06" depth="0.01" color="#ffffff"></a-box>
-                <a-text value="FIRE ALARM" position="0 0.1 0.05" align="center" width="0.75" color="#dc2626"></a-text>
+            <!-- SAFETY HARDWARE 1: Fire Alarm Pull Station -->
+            <a-entity id="fire-alarm-station" position="-2.9 1.4 -4.5" rotation="0 90 0"
+                      fire-alarm-station
+                      interactable="actionText: PULL FIRE ALARM; highlightColor: #ef4444">
+                <!-- Generous interaction box covering entire backplate -->
+                <a-box width="0.4" height="0.5" depth="0.1" color="#dc2626"></a-box>
+                <a-box position="0 0.12 0.052" width="0.3" height="0.08" depth="0.01" color="#ffffff"></a-box>
+                <a-text value="FIRE ALARM" position="0 0.12 0.06" align="center" width="1.0" color="#dc2626"></a-text>
                 <!-- Pull Lever -->
-                <a-entity class="alarm-handle" position="0 0 0.045">
-                    <a-box position="0 -0.05 0" width="0.09" height="0.1" depth="0.02" color="#ffffff"></a-box>
-                    <a-text value="PULL" position="0 -0.05 0.015" align="center" width="0.55" color="#000000"></a-text>
+                <a-entity class="alarm-handle" position="0 0 0.055">
+                    <a-box position="0 -0.07 0" width="0.12" height="0.12" depth="0.03" color="#ffffff"></a-box>
+                    <a-text value="PULL" position="0 -0.07 0.02" align="center" width="0.7" color="#000000"></a-text>
                 </a-entity>
-                <a-plane position="0 0.28 0.05" width="0.5" height="0.12" color="#1e293b" material="opacity: 0.88">
-                    <a-text value="CLICK / E TO PULL" align="center" width="0.85" color="#fbbf24"></a-text>
+                <a-plane position="0 0.35 0.06" width="0.65" height="0.15" color="#1e293b" material="opacity: 0.9">
+                    <a-text value="CLICK / E TO PULL" align="center" width="1.0" color="#fbbf24"></a-text>
                 </a-plane>
             </a-entity>
 
-            <!-- SAFETY HARDWARE 2: Wall-Mounted Fire Extinguisher Bracket & Unit (Corridor West Wall, Z = -8.5) -->
-            <a-entity id="fire-extinguisher" position="-2.88 1.25 -8.5" rotation="0 90 0" fire-extinguisher class="clickable">
-                <a-box position="0 0 -0.03" width="0.28" height="0.65" depth="0.04" color="#1e293b"></a-box>
-                <!-- Extinguisher Cylinder -->
-                <a-cylinder position="0 0 0.08" radius="0.09" height="0.46" color="#dc2626"></a-cylinder>
-                <a-sphere position="0 0.23 0.08" radius="0.09" color="#dc2626"></a-sphere>
-                <a-cylinder position="0 0.32 0.08" radius="0.03" height="0.08" color="#0f172a"></a-cylinder>
-                <a-box position="0.04 0.34 0.08" width="0.08" height="0.03" depth="0.02" color="#0f172a"></a-box>
-                <!-- Discharge Foam Stream (Triggered during spray) -->
+            <!-- SAFETY HARDWARE 2: Fire Extinguisher Bracket & Unit -->
+            <a-entity id="fire-extinguisher" position="-2.88 1.25 -8.5" rotation="0 90 0"
+                      fire-extinguisher
+                      interactable="actionText: GRAB EXTINGUISHER; highlightColor: #38bdf8">
+                <!-- Generous interactive volume for whole extinguisher body -->
+                <a-box position="0 0 -0.03" width="0.4" height="0.8" depth="0.05" color="#1e293b"></a-box>
+                <a-cylinder position="0 0 0.08" radius="0.12" height="0.5" color="#dc2626"></a-cylinder>
+                <a-sphere position="0 0.25 0.08" radius="0.12" color="#dc2626"></a-sphere>
+                <a-cylinder position="0 0.35 0.08" radius="0.04" height="0.08" color="#0f172a"></a-cylinder>
+                <a-box position="0.05 0.37 0.08" width="0.1" height="0.04" depth="0.03" color="#0f172a"></a-box>
+                <!-- Spray Foam Particle Cone -->
                 <a-cone class="extinguisher-foam" position="0.4 0.3 0.45" rotation="-80 0 0" radius-bottom="0.32" radius-top="0.01" height="1.1"
                         color="#ffffff" material="opacity: 0.75; transparent: true" visible="false"></a-cone>
-                <!-- Label -->
-                <a-plane position="0 0 0.171" width="0.14" height="0.22" color="#ffffff">
-                    <a-text value="CO2\nFIRE\nEXTINGUISHER" align="center" width="0.4" color="#dc2626"></a-text>
+                <a-plane position="0 0 0.205" width="0.18" height="0.26" color="#ffffff">
+                    <a-text value="CO2\nFIRE\nEXTINGUISHER" align="center" width="0.5" color="#dc2626"></a-text>
                 </a-plane>
-                <a-plane position="0 0.45 0.08" width="0.5" height="0.12" color="#1e293b" material="opacity: 0.88">
-                    <a-text value="CLICK / E TO EQUIP" align="center" width="0.8" color="#38bdf8"></a-text>
+                <a-plane position="0 0.52 0.08" width="0.65" height="0.15" color="#1e293b" material="opacity: 0.9">
+                    <a-text value="CLICK / E TO EQUIP" align="center" width="1.0" color="#38bdf8"></a-text>
                 </a-plane>
             </a-entity>
 
             <!-- DIRECTIONAL ILLUMINATED EXIT SIGNS -->
             <a-entity position="0 2.5 -5">
-                <a-box width="0.75" height="0.28" depth="0.08" color="#064e3b"></a-box>
-                <a-plane position="0 0 0.041" width="0.7" height="0.24" mixin="exit-sign">
-                    <a-text value="▲ MAIN EXIT" align="center" width="1.6" color="#ffffff"></a-text>
+                <a-box width="0.8" height="0.3" depth="0.08" color="#064e3b"></a-box>
+                <a-plane position="0 0 0.041" width="0.75" height="0.26" mixin="exit-sign">
+                    <a-text value="▲ MAIN EXIT" align="center" width="1.7" color="#ffffff"></a-text>
                 </a-plane>
-                <a-plane position="0 0 -0.041" rotation="0 180 0" width="0.7" height="0.24" mixin="exit-sign">
-                    <a-text value="MAIN EXIT ▲" align="center" width="1.6" color="#ffffff"></a-text>
+                <a-plane position="0 0 -0.041" rotation="0 180 0" width="0.75" height="0.26" mixin="exit-sign">
+                    <a-text value="MAIN EXIT ▲" align="center" width="1.7" color="#ffffff"></a-text>
                 </a-plane>
             </a-entity>
 
-            <!-- Exit Sign at Junction to Emergency Exit B -->
             <a-entity position="0 2.5 -12">
-                <a-box width="0.85" height="0.28" depth="0.08" color="#064e3b"></a-box>
-                <a-plane position="0 0 0.041" width="0.8" height="0.24" mixin="exit-sign">
-                    <a-text value="EMERGENCY EXIT B ▶" align="center" width="1.4" color="#ffffff"></a-text>
+                <a-box width="0.9" height="0.3" depth="0.08" color="#064e3b"></a-box>
+                <a-plane position="0 0 0.041" width="0.85" height="0.26" mixin="exit-sign">
+                    <a-text value="EMERGENCY EXIT B ▶" align="center" width="1.5" color="#ffffff"></a-text>
                 </a-plane>
             </a-entity>
         </a-entity>
 
-        <!-- 5. MAIN LOBBY & RECEPTION (North Zone: Z = -18 to -26, X = -7 to 7) -->
+        <!-- 5. MAIN LOBBY & RECEPTION -->
         <a-entity id="main-lobby">
-            <!-- Floor & Ceiling -->
             <a-plane position="0 0 -22" rotation="-90 0 0" width="14" height="8" mixin="floor-tile"></a-plane>
             <a-plane position="0 3 -22" rotation="90 0 0" width="14" height="8" mixin="ceiling-tile"></a-plane>
-            <!-- West Wall -->
             <a-plane position="-7 1.5 -22" rotation="0 90 0" width="8" height="3" mixin="wall-mat"></a-plane>
-            <!-- East Wall -->
             <a-plane position="7 1.5 -22" rotation="0 -90 0" width="8" height="3" mixin="wall-mat"></a-plane>
-            <!-- South Wall (split by corridor entrance) -->
             <a-plane position="-5 1.5 -18" width="4" height="3" mixin="wall-mat"></a-plane>
             <a-plane position="5 1.5 -18" width="4" height="3" mixin="wall-mat"></a-plane>
 
-            <!-- North Wall (Double Main Entrance Doors leading to exterior courtyard) -->
-            <a-plane position="-4.5 1.5 -26" width="5" height="3" mixin="wall-mat"></a-plane>
-            <a-plane position="4.5 1.5 -26" width="5" height="3" mixin="wall-mat"></a-plane>
-            <a-plane position="0 2.6 -26" width="4" height="0.8" mixin="wall-mat"></a-plane>
+            <!-- Main Entrance Doors to exterior -->
+            <a-plane position="-4.75 1.5 -26" width="4.5" height="3" mixin="wall-mat"></a-plane>
+            <a-plane position="4.75 1.5 -26" width="4.5" height="3" mixin="wall-mat"></a-plane>
+            <a-plane position="0 2.6 -26" width="5" height="0.8" mixin="wall-mat"></a-plane>
 
-            <!-- Main Entrance Double Doors -->
-            <a-entity id="door-main-left" position="-1.5 0 -26" fire-door="isOpen: false; openAngle: 90; colliderId: col-door-main-l" class="clickable">
-                <a-box position="0.7 1.1 0.02" width="1.4" height="2.2" depth="0.06" color="#1e293b"></a-box>
-                <a-plane position="0.7 1.1 0.052" width="0.9" height="1.4" color="#38bdf8" material="opacity: 0.35; transparent: true"></a-plane>
+            <a-entity id="door-main-left" position="-1.5 0 -26"
+                      unified-door="isOpen: false; openAngle: 90; colliderId: col-door-main-l"
+                      interactable="actionText: OPEN MAIN DOOR">
+                <a-box position="0.75 1.1 0.02" width="1.5" height="2.2" depth="0.06" color="#1e293b"></a-box>
+                <a-plane position="0.75 1.1 0.052" width="1.0" height="1.4" color="#38bdf8" material="opacity: 0.35; transparent: true"></a-plane>
             </a-entity>
-            <a-entity id="door-main-right" position="0.1 0 -26" fire-door="isOpen: false; openAngle: -90; colliderId: col-door-main-r" class="clickable">
-                <a-box position="0.7 1.1 0.02" width="1.4" height="2.2" depth="0.06" color="#1e293b"></a-box>
-                <a-plane position="0.7 1.1 0.052" width="0.9" height="1.4" color="#38bdf8" material="opacity: 0.35; transparent: true"></a-plane>
+            <a-entity id="door-main-right" position="0.0 0 -26"
+                      unified-door="isOpen: false; openAngle: -90; colliderId: col-door-main-r"
+                      interactable="actionText: OPEN MAIN DOOR">
+                <a-box position="0.75 1.1 0.02" width="1.5" height="2.2" depth="0.06" color="#1e293b"></a-box>
+                <a-plane position="0.75 1.1 0.052" width="1.0" height="1.4" color="#38bdf8" material="opacity: 0.35; transparent: true"></a-plane>
             </a-entity>
 
-            <!-- Reception Desk & Structural Columns -->
             <a-box position="4.0 0.55 -21" width="2.4" height="1.1" depth="0.8" color="#334155"></a-box>
             <a-cylinder position="-3 1.5 -22" radius="0.3" height="3.0" color="#475569"></a-cylinder>
             <a-cylinder position="3 1.5 -22" radius="0.3" height="3.0" color="#475569"></a-cylinder>
 
-            <!-- Overhead Exit Banner -->
-            <a-plane position="0 2.5 -25.95" width="2.4" height="0.35" mixin="exit-sign">
-                <a-text value="MAIN ENTRANCE / CAMPUS EXIT" align="center" width="2.8" color="#ffffff"></a-text>
+            <a-plane position="0 2.5 -25.95" width="2.6" height="0.38" mixin="exit-sign">
+                <a-text value="MAIN ENTRANCE / CAMPUS EXIT" align="center" width="3.0" color="#ffffff"></a-text>
             </a-plane>
 
-            <!-- RAGING STRUCTURAL FIRE (Scenarios 2 & 3: Fully Engulfs Lobby Entrance) -->
+            <!-- RAGING STRUCTURAL FIRE (Scenarios 2 & 3: Blocks Lobby) -->
             <a-entity id="lobby-major-fire" position="0 0 -24.5" visible="false" flicker-fire="intensity: 4.0">
                 <a-cone class="flame-core" position="-0.8 1.0 0" radius-bottom="0.8" radius-top="0.06" height="2.2" color="#ef4444" material="emissive: #ef4444; emissiveIntensity: 1.4"></a-cone>
                 <a-cone class="flame-outer" position="-0.8 1.2 0" radius-bottom="1.1" radius-top="0.02" height="2.6" color="#f97316" material="emissive: #f97316; opacity: 0.85; transparent: true"></a-cone>
                 <a-cone class="flame-core" position="0.8 0.9 0.2" radius-bottom="0.7" radius-top="0.05" height="1.9" color="#ef4444" material="emissive: #ef4444; emissiveIntensity: 1.4"></a-cone>
                 <a-cone class="flame-outer" position="0.8 1.1 0.2" radius-bottom="1.0" radius-top="0.02" height="2.3" color="#f59e0b" material="emissive: #f59e0b; opacity: 0.85; transparent: true"></a-cone>
-                <!-- Collapsed Burning Structural Beam Obstacle -->
                 <a-box position="0 0.5 0" rotation="10 32 -12" width="3.4" height="0.4" depth="0.4" color="#1c1917"></a-box>
                 <a-light type="point" color="#f97316" intensity="4.0" distance="12"></a-light>
-                <!-- Educational Warning Plate -->
-                <a-plane position="0 2.2 0.9" width="2.6" height="0.45" color="#dc2626">
-                    <a-text value="⚠️ HAZARD: ROUTE BLOCKED BY FIRE!\nDO NOT ENTER — SEEK ALTERNATE EXIT" align="center" width="2.8" color="#ffffff"></a-text>
+                <a-plane position="0 2.2 0.9" width="2.8" height="0.45" color="#dc2626">
+                    <a-text value="⚠️ HAZARD: ROUTE BLOCKED BY FIRE!\nDO NOT ENTER — SEEK ALTERNATE EXIT" align="center" width="3.0" color="#ffffff"></a-text>
                 </a-plane>
             </a-entity>
         </a-entity>
 
-        <!-- 6. EMERGENCY STAIRWELL B & EMERGENCY EXIT B (East Corridor: X = 3 to 24, Z = -13 to -16) -->
+        <!-- 6. EMERGENCY STAIRWELL B & EMERGENCY EXIT B -->
         <a-entity id="emergency-exit-hall">
             <a-plane position="13.5 0 -14.5" rotation="-90 0 0" width="21" height="3" mixin="floor-tile"></a-plane>
             <a-plane position="13.5 3 -14.5" rotation="90 0 0" width="21" height="3" mixin="ceiling-tile"></a-plane>
             <a-plane position="13.5 1.5 -16" width="21" height="3" mixin="wall-mat"></a-plane>
             <a-plane position="13.5 1.5 -13" rotation="0 180 0" width="21" height="3" mixin="wall-mat"></a-plane>
 
-            <!-- Emergency Stair Steps (Visual architectural context leading up to Floor 2 & 3) -->
             <a-box position="18 0.2 -14.5" width="2.0" height="0.4" depth="2.2" color="#475569"></a-box>
             <a-box position="19 0.5 -14.5" width="1.2" height="0.6" depth="2.2" color="#334155"></a-box>
 
-            <!-- Exterior Wall at East End with Emergency Fire Exit B -->
             <a-plane position="24 2.6 -14.5" rotation="0 -90 0" width="3" height="0.8" mixin="wall-mat"></a-plane>
-            <a-plane position="24 1.5 -13.4" rotation="0 -90 0" width="0.8" height="3" mixin="wall-mat"></a-plane>
-            <a-plane position="24 1.5 -15.6" rotation="0 -90 0" width="0.8" height="3" mixin="wall-mat"></a-plane>
+            <a-plane position="24 1.5 -13.25" rotation="0 -90 0" width="0.5" height="3" mixin="wall-mat"></a-plane>
+            <a-plane position="24 1.5 -15.75" rotation="0 -90 0" width="0.5" height="3" mixin="wall-mat"></a-plane>
 
             <!-- Emergency Exit B Door with Panic Push-Bar -->
-            <a-entity id="door-exit-b" position="24 0 -13.8" rotation="0 -90 0"
-                      fire-door="isOpen: false; openAngle: -95; colliderId: col-door-exit-b" class="clickable">
-                <a-box position="0.6 1.1 0.02" width="1.2" height="2.2" depth="0.06" mixin="door-fire"></a-box>
-                <!-- Heavy Duty Push Bar -->
-                <a-box position="0.6 1.0 0.08" width="0.95" height="0.09" depth="0.04" color="#dc2626"></a-box>
-                <a-text value="PUSH TO OPEN" position="0.6 1.0 0.11" align="center" width="1.0" color="#ffffff"></a-text>
+            <a-entity id="door-exit-b" position="24 0 -13.5" rotation="0 -90 0"
+                      unified-door="isOpen: false; openAngle: -95; colliderId: col-door-exit-b"
+                      interactable="actionText: PUSH EMERGENCY EXIT; highlightColor: #10b981">
+                <a-box position="0.75 1.1 0.02" width="1.5" height="2.2" depth="0.06" mixin="door-fire"></a-box>
+                <a-box position="0.75 1.0 0.08" width="1.2" height="0.1" depth="0.04" color="#dc2626"></a-box>
+                <a-text value="PUSH TO OPEN" position="0.75 1.0 0.11" align="center" width="1.3" color="#ffffff"></a-text>
             </a-entity>
 
-            <!-- Overhead Illuminated Exit Sign -->
             <a-entity position="23.9 2.5 -14.5" rotation="0 -90 0">
-                <a-box width="1.2" height="0.32" depth="0.08" color="#064e3b"></a-box>
-                <a-plane position="0 0 0.041" width="1.15" height="0.28" mixin="exit-sign">
-                    <a-text value="EMERGENCY EXIT B\n[STAIRWELL TO COURTYARD]" align="center" width="1.7" color="#ffffff"></a-text>
+                <a-box width="1.3" height="0.32" depth="0.08" color="#064e3b"></a-box>
+                <a-plane position="0 0 0.041" width="1.25" height="0.28" mixin="exit-sign">
+                    <a-text value="EMERGENCY EXIT B\n[STAIRWELL TO COURTYARD]" align="center" width="1.8" color="#ffffff"></a-text>
                 </a-plane>
             </a-entity>
         </a-entity>
 
-        <!-- 7. EXTERIOR COURTYARD & SAFE MUSTER ASSEMBLY POINT (Z = -26 to -45, X = -10 to 30) -->
+        <!-- 7. EXTERIOR COURTYARD & SAFE MUSTER POINT -->
         <a-entity id="exterior-courtyard">
-            <!-- Ground Lawn & Walkway -->
             <a-plane position="8 -0.01 -34" rotation="-90 0 0" width="40" height="20" color="#166534"></a-plane>
             <a-plane position="0 0.01 -32" rotation="-90 0 0" width="6" height="12" color="#475569"></a-plane>
             <a-plane position="14 0.01 -24" rotation="-90 0 0" width="22" height="4" color="#475569"></a-plane>
 
-            <!-- Perimeter Fence -->
             <a-box position="8 1.0 -44" width="40" height="2.0" depth="0.2" color="#334155"></a-box>
             <a-box position="-12 1.0 -34" rotation="0 90 0" width="20" height="2.0" depth="0.2" color="#334155"></a-box>
             <a-box position="28 1.0 -34" rotation="0 90 0" width="20" height="2.0" depth="0.2" color="#334155"></a-box>
@@ -1177,12 +1347,10 @@
                 <a-plane position="0 2.8 0.045" width="1.7" height="1.2" color="#10b981">
                     <a-text value="EMERGENCY\nASSEMBLY POINT\n\nSAFE MUSTER ZONE" align="center" width="2.8" color="#ffffff" font="roboto"></a-text>
                 </a-plane>
-                <!-- Ground Safe Decal Ring -->
                 <a-cylinder position="0 0.02 0" radius="3.2" height="0.02" color="#10b981" material="opacity: 0.65; transparent: true"></a-cylinder>
                 <a-ring position="0 0.03 0" rotation="-90 0 0" radius-inner="3.0" radius-outer="3.2" color="#ffffff"></a-ring>
             </a-entity>
 
-            <!-- Emergency Vehicle Staging Area -->
             <a-plane position="-4 0.02 -36" rotation="-90 0 0" width="6" height="8" color="#1e293b"></a-plane>
             <a-text value="EMERGENCY VEHICLE ACCESS ONLY" position="-4 0.05 -36" rotation="-90 0 0" align="center" width="3.2" color="#f59e0b"></a-text>
 
@@ -1190,7 +1358,7 @@
         </a-entity>
 
         <!-- ================================================================= -->
-        <!-- SMOKE HAZARD NODES (Dynamic Proximity-Based Smoke System)          -->
+        <!-- SMOKE HAZARDS                                                     -->
         <!-- ================================================================= -->
         <a-entity id="smoke-node-1" position="0 1.8 -4" visible="false">
             <a-sphere radius="1.4" material="color: #475569; opacity: 0.32; transparent: true"
@@ -1208,7 +1376,7 @@
         </a-entity>
 
         <!-- ================================================================= -->
-        <!-- VIRTUAL OCCUPANTS (NPCs: Dynamic Crowd Flow Demonstration)        -->
+        <!-- VIRTUAL OCCUPANTS (NPCs)                                          -->
         <!-- ================================================================= -->
         <a-entity id="npc-1" position="8 0 -4">
             <a-cylinder position="0 0.8 0" radius="0.22" height="1.1" color="#3b82f6"></a-cylinder>
@@ -1223,7 +1391,7 @@
         </a-entity>
 
         <!-- ================================================================= -->
-        <!-- 3D VR PERFORMANCE REPORT BOARD (At Exterior Assembly Point)       -->
+        <!-- 3D VR PERFORMANCE REPORT BOARD                                    -->
         <!-- ================================================================= -->
         <a-entity id="results-board" position="10 1.6 -31" rotation="0 180 0" visible="false">
             <a-plane width="2.5" height="2.3" color="#0b1329" material="opacity: 0.95">
@@ -1252,7 +1420,6 @@
                         value="YES\nExit B\n95 / 100\nA+ EXCELLENT"
                         position="0.95 0.22 0.02" width="1.9" color="#10b981" line-height="54"></a-text>
 
-                <!-- Training Feedback Insights -->
                 <a-plane width="2.3" height="0.52" position="0 -0.42 0.01" color="#1e293b">
                     <a-text value="TRAINING INSIGHTS:" position="-1.05 0.18 0.01" width="1.9" color="#fbbf24"></a-text>
                     <a-text id="report-insights-text"
@@ -1260,8 +1427,8 @@
                             position="-1.05 -0.06 0.01" width="2.1" wrap-count="44" color="#cbd5e1" line-height="50"></a-text>
                 </a-plane>
 
-                <!-- Restart Button -->
-                <a-plane id="btn-restart" position="0 -0.88 0.02" width="1.6" height="0.26" color="#3b82f6" class="clickable">
+                <a-plane id="btn-restart" position="0 -0.88 0.02" width="1.6" height="0.26" color="#3b82f6"
+                         interactable="actionText: RESTART SIMULATION">
                     <a-text value="🔄 RESTART SIMULATION" align="center" width="2.2" color="#ffffff" font="roboto"></a-text>
                 </a-plane>
             </a-plane>
@@ -1270,7 +1437,7 @@
     </a-scene>
 
     <!-- ========================================================================= -->
-    <!-- SIMULATION MANAGER, SCENARIO LOGIC & COLLISION INITIALIZATION             -->
+    <!-- SIMULATION MANAGER, SCENARIOS & INITIALIZATION                            -->
     <!-- ========================================================================= -->
     <script>
     const SimulationManager = (function() {
@@ -1331,64 +1498,117 @@
                 this.setupScenarioSelection();
                 this.setupKeyboardShortcuts();
                 this.startHeartbeat();
+                this.validateStartup();
             },
 
-            // Register all building walls, closed doors, and fire obstacles into CollisionEngine
+            // Automated Startup Validation
+            validateStartup: function() {
+                console.log("%c[SCENARIO VALIDATION] Starting Verification...", "color: #38bdf8; font-weight: bold;");
+                const door101 = document.querySelector('#door-101');
+                const alarm = document.querySelector('#fire-alarm-station');
+                const ext = document.querySelector('#fire-extinguisher');
+                const rig = document.querySelector('#rig');
+
+                let passed = true;
+                if (!door101 || !door101.components['unified-door']) {
+                    console.error("[VALIDATION ERROR] Door 101 missing or unconfigured!");
+                    passed = false;
+                } else {
+                    console.log("✓ Room 101 Door registered and interactable");
+                }
+
+                if (!alarm || !alarm.components['fire-alarm-station']) {
+                    console.error("[VALIDATION ERROR] Fire alarm station missing or unconfigured!");
+                    passed = false;
+                } else {
+                    console.log("✓ Wall-mounted fire alarm registered");
+                }
+
+                if (!ext || !ext.components['fire-extinguisher']) {
+                    console.error("[VALIDATION ERROR] Fire extinguisher missing or unconfigured!");
+                    passed = false;
+                } else {
+                    console.log("✓ Fire extinguisher equipped with targeting system");
+                }
+
+                if (rig) {
+                    const p = rig.getAttribute('position');
+                    if (Math.abs(p.x) < 0.1 && Math.abs(p.z) < 0.1) {
+                        console.log(`✓ Player safely spawned in clear space at (${p.x}, ${p.z})`);
+                    }
+                }
+
+                if (CollisionEngine.getObstacleCount() > 10) {
+                    console.log(`✓ Collision engine active with ${CollisionEngine.getObstacleCount()} registered colliders`);
+                }
+
+                if (passed) {
+                    console.log("%c[SCENARIO VALIDATION] ✓ SCENARIO 1 READY: ALL SYSTEMS VERIFIED", "color: #4ade80; font-weight: bold;");
+                }
+            },
+
+            // Setup Precise Colliders for Walls, Doors, and Barriers
             setupColliders: function() {
-                // Room 101 Walls
+                // Room 101 South, West, East Walls
                 CollisionEngine.registerBox('wall-101-s', -3.6, 3.6, 3.8, 4.2);
-                CollisionEngine.registerBox('wall-101-w', -3.7, -3.3, -2.0, 4.0);
-                CollisionEngine.registerBox('wall-101-e', 3.3, 3.7, -2.0, 4.0);
-                CollisionEngine.registerBox('wall-101-nw', -3.6, -1.0, -2.2, -1.8);
-                CollisionEngine.registerBox('wall-101-ne', 0.0, 3.6, -2.2, -1.8);
-                CollisionEngine.registerBox('col-door-101', -1.0, 0.0, -2.1, -1.9, true); // Door 101
+                CollisionEngine.registerBox('wall-101-w', -3.7, -3.3, -2.1, 4.1);
+                CollisionEngine.registerBox('wall-101-e', 3.3, 3.7, -2.1, 4.1);
 
-                // Corridor & East Wing Walls
-                CollisionEngine.registerBox('wall-102-s', 4.5, 11.5, 3.8, 4.2);
-                CollisionEngine.registerBox('wall-102-e', 11.3, 11.7, -2.0, 4.0);
-                CollisionEngine.registerBox('wall-102-nw', 4.5, 7.5, -2.2, -1.8);
-                CollisionEngine.registerBox('wall-102-ne', 8.5, 11.5, -2.2, -1.8);
-                CollisionEngine.registerBox('col-door-102', 7.5, 8.5, -2.1, -1.9, true);
+                // Room 101 North Wall Segments:
+                // Doorway is 1.5m wide from X = -0.75 to X = 0.75
+                // Left wall: from -3.6 to -0.75
+                CollisionEngine.registerBox('wall-101-nw', -3.6, -0.75, -2.2, -1.8);
+                // Right wall: from +0.75 to +3.6
+                CollisionEngine.registerBox('wall-101-ne', 0.75, 3.6, -2.2, -1.8);
+                // Dynamic Door Collider: active when closed; cleared when opened!
+                CollisionEngine.registerBox('col-door-101', -0.75, 0.75, -2.15, -1.85, true);
 
-                CollisionEngine.registerBox('wall-103-s', 12.5, 19.5, 3.8, 4.2);
-                CollisionEngine.registerBox('wall-103-e', 19.3, 19.7, -2.0, 4.0);
-                CollisionEngine.registerBox('wall-103-nw', 12.5, 15.5, -2.2, -1.8);
-                CollisionEngine.registerBox('wall-103-ne', 16.5, 19.5, -2.2, -1.8);
-                CollisionEngine.registerBox('col-door-103', 15.5, 16.5, -2.1, -1.9, true);
+                // Room 102 & 103 Colliders
+                CollisionEngine.registerBox('wall-102-s', 4.4, 11.6, 3.8, 4.2);
+                CollisionEngine.registerBox('wall-102-e', 11.3, 11.7, -2.1, 4.1);
+                CollisionEngine.registerBox('wall-102-nw', 4.4, 7.25, -2.2, -1.8);
+                CollisionEngine.registerBox('wall-102-ne', 8.75, 11.6, -2.2, -1.8);
+                CollisionEngine.registerBox('col-door-102', 7.25, 8.75, -2.15, -1.85, true);
+
+                CollisionEngine.registerBox('wall-103-s', 12.4, 19.6, 3.8, 4.2);
+                CollisionEngine.registerBox('wall-103-e', 19.3, 19.7, -2.1, 4.1);
+                CollisionEngine.registerBox('wall-103-nw', 12.4, 15.25, -2.2, -1.8);
+                CollisionEngine.registerBox('wall-103-ne', 16.75, 19.6, -2.2, -1.8);
+                CollisionEngine.registerBox('col-door-103', 15.25, 16.75, -2.15, -1.85, true);
 
                 // Common Room
                 CollisionEngine.registerBox('wall-com-s', -13.6, -4.4, 5.8, 6.2);
-                CollisionEngine.registerBox('wall-com-w', -13.7, -13.3, -2.0, 6.0);
-                CollisionEngine.registerBox('wall-com-nw', -13.6, -8.5, -2.2, -1.8);
-                CollisionEngine.registerBox('wall-com-ne', -7.5, -4.4, -2.2, -1.8);
-                CollisionEngine.registerBox('col-door-common', -8.5, -7.5, -2.1, -1.9, true);
+                CollisionEngine.registerBox('wall-com-w', -13.7, -13.3, -2.1, 6.1);
+                CollisionEngine.registerBox('wall-com-nw', -13.6, -8.75, -2.2, -1.8);
+                CollisionEngine.registerBox('wall-com-ne', -7.25, -4.4, -2.2, -1.8);
+                CollisionEngine.registerBox('col-door-common', -8.75, -7.25, -2.15, -1.85, true);
 
-                // Corridor North-South Boundaries
+                // Corridor Boundaries
                 CollisionEngine.registerBox('cor-n-w', -3.2, -2.8, -18.0, -6.0);
                 CollisionEngine.registerBox('cor-n-e1', 2.8, 3.2, -12.0, -6.0);
                 CollisionEngine.registerBox('cor-n-e2', 2.8, 3.2, -18.0, -15.0);
 
-                // Main Lobby Walls
+                // Main Lobby Walls & Doors
                 CollisionEngine.registerBox('lob-w', -7.2, -6.8, -26.0, -18.0);
                 CollisionEngine.registerBox('lob-e', 6.8, 7.2, -26.0, -18.0);
                 CollisionEngine.registerBox('lob-s-w', -7.0, -3.0, -18.2, -17.8);
                 CollisionEngine.registerBox('lob-s-e', 3.0, 7.0, -18.2, -17.8);
                 CollisionEngine.registerBox('lob-n-w', -7.0, -1.5, -26.2, -25.8);
                 CollisionEngine.registerBox('lob-n-e', 1.5, 7.0, -26.2, -25.8);
-                CollisionEngine.registerBox('col-door-main-l', -1.5, 0.0, -26.1, -25.9, true);
-                CollisionEngine.registerBox('col-door-main-r', 0.0, 1.5, -26.1, -25.9, true);
+                CollisionEngine.registerBox('col-door-main-l', -1.5, 0.0, -26.15, -25.85, true);
+                CollisionEngine.registerBox('col-door-main-r', 0.0, 1.5, -26.15, -25.85, true);
 
                 // Emergency Exit B Hallway & Door
                 CollisionEngine.registerBox('hall-b-n', 3.0, 24.0, -16.2, -15.8);
                 CollisionEngine.registerBox('hall-b-s', 3.0, 24.0, -13.2, -12.8);
-                CollisionEngine.registerBox('col-door-exit-b', 23.8, 24.2, -14.6, -13.4, true);
+                CollisionEngine.registerBox('col-door-exit-b', 23.8, 24.2, -15.0, -13.5, true);
 
                 // Exterior Boundary Fence
                 CollisionEngine.registerBox('fence-n', -12.0, 28.0, -44.2, -43.8);
                 CollisionEngine.registerBox('fence-w', -12.2, -11.8, -44.0, -24.0);
                 CollisionEngine.registerBox('fence-e', 27.8, 28.2, -44.0, -24.0);
 
-                // Dynamic Fire Barrier (Active in Scenarios 2 & 3)
+                // Physical Fire Barrier in Main Lobby (Active in Scenarios 2 & 3)
                 CollisionEngine.registerBox('fire-barrier-lobby', -2.5, 2.5, -25.5, -23.5, true);
                 CollisionEngine.setBoxActive('fire-barrier-lobby', false);
             },
@@ -1409,6 +1629,10 @@
                     document.querySelector('#hud-scenario').innerText = `Scenario: ${currentScenario.name}`;
                 };
 
+                s1Btn.addEventListener('interaction-trigger', () => select(1));
+                s2Btn.addEventListener('interaction-trigger', () => select(2));
+                s3Btn.addEventListener('interaction-trigger', () => select(3));
+
                 s1Btn.addEventListener('click', () => select(1));
                 s2Btn.addEventListener('click', () => select(2));
                 s3Btn.addEventListener('click', () => select(3));
@@ -1417,10 +1641,16 @@
 
             bindUI: function() {
                 const startBtn = document.querySelector('#btn-start-training');
-                if (startBtn) startBtn.addEventListener('click', () => this.startTraining());
+                if (startBtn) {
+                    startBtn.addEventListener('interaction-trigger', () => this.startTraining());
+                    startBtn.addEventListener('click', () => this.startTraining());
+                }
 
                 const restartBtn = document.querySelector('#btn-restart');
-                if (restartBtn) restartBtn.addEventListener('click', () => this.restartScenario());
+                if (restartBtn) {
+                    restartBtn.addEventListener('interaction-trigger', () => this.restartScenario());
+                    restartBtn.addEventListener('click', () => this.restartScenario());
+                }
 
                 const rig = document.querySelector('#rig');
                 if (rig) {
@@ -1429,9 +1659,11 @@
                 }
             },
 
+            // Keyboard Shortcuts (F3 for debug, E for interact, R for restart)
             setupKeyboardShortcuts: function() {
                 window.addEventListener('keydown', (e) => {
-                    if (e.key === 'd' || e.key === 'D') {
+                    if (e.key === 'F3' || e.key === 'F10') {
+                        e.preventDefault();
                         const dbg = document.querySelector('#debug-overlay');
                         dbg.style.display = (dbg.style.display === 'none' || !dbg.style.display) ? 'block' : 'none';
                     } else if (e.key === 'r' || e.key === 'R') {
@@ -1443,14 +1675,7 @@
                     } else if (e.key === '3') {
                         this.setScenarioById(3);
                     } else if (e.key === 'e' || e.key === 'E') {
-                        // Desktop 'E' interaction: trigger raycast target
-                        const cursor = document.querySelector('#desktop-cursor');
-                        if (cursor && cursor.components.raycaster) {
-                            const intersected = cursor.components.raycaster.intersectedEls;
-                            if (intersected && intersected.length > 0) {
-                                intersected[0].emit('click');
-                            }
-                        }
+                        InteractionManager.executeCurrent();
                     }
                 });
             },
@@ -1481,31 +1706,27 @@
                 isEmergencyActive = true;
                 SoundEngine.startFireSound();
 
-                // Ignite trash fire
                 if (currentScenario.fireStartsTrash) {
                     document.querySelector('#trash-fire').setAttribute('visible', 'true');
                 }
 
-                // Ignite major lobby fire & activate physical impassable fire barrier
                 if (currentScenario.fireStartsLobby) {
                     document.querySelector('#lobby-major-fire').setAttribute('visible', 'true');
                     CollisionEngine.setBoxActive('fire-barrier-lobby', true);
 
                     const doorL = document.querySelector('#door-main-left');
                     const doorR = document.querySelector('#door-main-right');
-                    if (doorL) doorL.setAttribute('fire-door', { isBlocked: true, blockReason: 'Main entrance engulfed in raging fire!' });
-                    if (doorR) doorR.setAttribute('fire-door', { isBlocked: true, blockReason: 'Main entrance engulfed in raging fire!' });
+                    if (doorL) doorL.setAttribute('unified-door', { isFireBlocked: true, blockReason: 'Main entrance engulfed in raging fire!' });
+                    if (doorR) doorR.setAttribute('unified-door', { isFireBlocked: true, blockReason: 'Main entrance engulfed in raging fire!' });
                 }
 
-                // Activate Smoke
                 if (currentScenario.smokeNodes[0]) document.querySelector('#smoke-node-1').setAttribute('visible', 'true');
                 if (currentScenario.smokeNodes[1]) document.querySelector('#smoke-node-2').setAttribute('visible', 'true');
                 if (currentScenario.smokeNodes[2]) document.querySelector('#smoke-node-3').setAttribute('visible', 'true');
 
-                // NPCs react
                 this.triggerNPCReaction();
 
-                // Auto-trigger facility alarm after 8s if user hasn't pulled it
+                // Auto-trigger alarm after 8s if user hasn't pulled it
                 setTimeout(() => {
                     if (!alarmPulledByUser && isEmergencyActive) {
                         this.activateAlarm(false);
@@ -1526,7 +1747,6 @@
                     this.showVRToast("🚨 MANUAL FIRE ALARM ACTIVATED!\nFacility alerted.", 2600);
                 }
 
-                // Emergency Strobes
                 const strobes = document.querySelector('#emergency-strobes');
                 if (strobes) {
                     strobes.setAttribute('visible', 'true');
@@ -1540,7 +1760,6 @@
                     }, 400);
                 }
 
-                // In Advanced Scenario, drop ambient light to simulate power outage
                 if (currentScenario.id === 3) {
                     document.querySelector('#ambient-light').setAttribute('light', 'intensity', '0.18');
                 }
@@ -1569,10 +1788,12 @@
 
                 if (this.trashFireHP <= 0) {
                     if (trashFire) trashFire.setAttribute('visible', 'false');
+                    const smokeNode = document.querySelector('#smoke-node-1');
+                    if (smokeNode) smokeNode.setAttribute('visible', 'false');
                     this.showVRToast("✅ Small trash fire suppressed!\nContinue evacuating to safety.", 3000);
                     SoundEngine.playSuccess();
                 } else {
-                    this.showVRToast(`Suppressing fire... (${this.trashFireHP}%)`, 800);
+                    this.showVRToast(`Suppressing fire... (${this.trashFireHP}%)`, 700);
                 }
             },
 
@@ -1597,12 +1818,10 @@
                     if (!rig) return;
                     const p = rig.getAttribute('position');
 
-                    // First movement reaction
                     if (firstMoveTime === 0 && (Math.abs(p.x - initialPos.x) > 0.4 || Math.abs(p.z - initialPos.z) > 0.4)) {
                         firstMoveTime = (performance.now() - startTime) / 1000;
                     }
 
-                    // Update HUD Timer
                     if (startTime > 0 && !isSimulationEnded) {
                         const elapsed = Math.floor((performance.now() - startTime) / 1000);
                         const mins = String(Math.floor(elapsed / 60)).padStart(2, '0');
@@ -1610,7 +1829,7 @@
                         document.querySelector('#hud-timer').innerText = `Time: ${mins}:${secs}`;
                     }
 
-                    // Dynamic Smoke Exposure Evaluation
+                    // Dynamic Smoke Exposure
                     if (isEmergencyActive) {
                         let smokeDensity = 0;
                         const distToLobby = Math.hypot(p.x - 0, p.z - (-22));
@@ -1622,7 +1841,7 @@
 
                         if (smokeDensity > 0) {
                             smokeExposureSeconds += 0.3 * smokeDensity;
-                            if (Math.random() > 0.7) SoundEngine.playCough();
+                            if (Math.random() > 0.72) SoundEngine.playCough();
 
                             const smokePct = Math.min(100, Math.round(smokeExposureSeconds * 3.5));
                             document.querySelector('#hud-smoke-val').innerText = `${smokePct}%`;
@@ -1645,28 +1864,26 @@
                         }
                     }
 
-                    // Reached Safe Assembly Muster Area (X: 6 to 14, Z: -38 to -30)
+                    // Safe Assembly Area Reached
                     if (p.x >= 6.0 && p.x <= 14.0 && p.z <= -30.0 && p.z >= -38.0) {
                         this.completeEvacuation();
                     }
 
-                    // Update Debug Overlay
                     this.updateDiagnostics(p);
                 }, 300);
             },
 
             updateDiagnostics: function(p) {
                 const dbg = document.querySelector('#debug-overlay');
-                if (dbg.style.display !== 'none') {
+                if (dbg && dbg.style.display !== 'none') {
                     document.querySelector('#dbg-scenario').innerText = currentScenario.id;
                     document.querySelector('#dbg-pos').innerText = `${p.x.toFixed(1)}, ${p.z.toFixed(1)}`;
                     document.querySelector('#dbg-alarm').innerText = isEmergencyActive ? (alarmPulledByUser ? 'PULLED BY USER' : 'AUTO-ACTIVE') : 'STANDBY';
                     document.querySelector('#dbg-colliders').innerText = CollisionEngine.getObstacleCount();
                     document.querySelector('#dbg-smoke').innerText = `${smokeExposureSeconds.toFixed(1)}s`;
-                    document.querySelector('#dbg-wrong').innerText = wrongRouteDecisions;
                     document.querySelector('#dbg-fire-hp').innerText = `${this.trashFireHP}%`;
 
-                    let zone = 'Dorm Room 101';
+                    let zone = 'Room 101';
                     if (p.z < -26) zone = 'Exterior Courtyard / Assembly';
                     else if (p.z < -18) zone = 'Main Lobby';
                     else if (p.x > 3 && p.z < -12) zone = 'Emergency Exit B Stairwell';
@@ -1721,7 +1938,6 @@
                 const smokePct = Math.min(100, Math.round(smokeExposureSeconds * 3.5));
                 const smokeRating = `${smokePct}% (${Math.round(smokeExposureSeconds)}s)`;
 
-                // Update Report Board
                 document.querySelector('#report-status-text').setAttribute('value', statusText);
                 document.querySelector('#report-badge-bg').setAttribute('color', statusColor);
 
@@ -1765,14 +1981,12 @@
                 exitUsed = 'None';
                 this.trashFireHP = 100;
 
-                // Reset HUD & Meters
                 document.querySelector('#hud-smoke-val').innerText = '0%';
                 document.querySelector('#smoke-meter-fill').style.width = '0%';
                 document.querySelector('#hud-alarm').innerText = 'Alarm: Standby';
                 document.querySelector('#hud-alarm').style.color = '#94a3b8';
                 document.querySelector('#hud-extinguisher-box').style.display = 'none';
 
-                // Reset 3D Entities
                 document.querySelector('#results-board').setAttribute('visible', 'false');
                 document.querySelector('#onboarding-board').setAttribute('visible', 'true');
                 document.querySelector('#trash-fire').setAttribute('visible', 'false');
@@ -1784,19 +1998,18 @@
                 document.querySelector('#ambient-light').setAttribute('light', 'intensity', '0.52');
                 document.querySelector('#assembly-spotlight').setAttribute('light', 'intensity', '0');
 
-                // Reset Colliders & Doors
                 CollisionEngine.setBoxActive('fire-barrier-lobby', false);
-                document.querySelectorAll('[fire-door]').forEach(el => {
-                    const comp = el.components['fire-door'];
+                document.querySelectorAll('[unified-door]').forEach(el => {
+                    const comp = el.components['unified-door'];
                     if (comp) {
                         comp.data.isOpen = false;
                         comp.data.isBlocked = false;
+                        comp.data.isFireBlocked = false;
                         el.setAttribute('rotation', `0 ${comp.initialY} 0`);
                         if (comp.data.colliderId) CollisionEngine.setBoxActive(comp.data.colliderId, true);
                     }
                 });
 
-                // Reset NPCs
                 const n1 = document.querySelector('#npc-1');
                 const n2 = document.querySelector('#npc-2');
                 if (n1) {
@@ -1812,7 +2025,6 @@
                     document.querySelector('#npc-2-bubble').setAttribute('color', '#cbd5e1');
                 }
 
-                // Reset Alarm Handle
                 const alarmStation = document.querySelector('#fire-alarm-station');
                 if (alarmStation && alarmStation.components['fire-alarm-station']) {
                     alarmStation.components['fire-alarm-station'].isPulled = false;
