@@ -223,7 +223,12 @@
         Zone: <span id="dbg-zone">Room 101</span><br>
         Alarm: <span id="dbg-alarm">STANDBY</span><br>
         Door 101: <span id="dbg-door101">CLOSED</span><br>
-        Extinguisher: <span id="dbg-ext">AVAILABLE (100%)</span><br>
+        <strong>--- EXTINGUISHER ---</strong><br>
+        State: <span id="dbg-ext">AVAILABLE (100%)</span><br>
+        Spray: <span id="dbg-ext-spray">INACTIVE</span><br>
+        Charge: <span id="dbg-ext-charge">100%</span><br>
+        Target: <span id="dbg-ext-target">NONE</span><br>
+        <strong>--- FIRES ---</strong><br>
         Trash Fire HP: <span id="dbg-fire-hp">100%</span><br>
         Smoke Exposure: <span id="dbg-smoke">0s</span><br>
         Current Target: <span id="dbg-target">NONE</span><br>
@@ -453,6 +458,51 @@
                     osc.start(now + idx * 0.1);
                     osc.stop(now + idx * 0.1 + 1.3);
                 });
+            },
+
+            // Continuous extinguisher hiss — starts looping white noise until stopped
+            startExtinguisherHiss: function() {
+                const c = getContext();
+                if (!c) return;
+                // Stop existing hiss if any
+                this.stopExtinguisherHiss();
+                try {
+                    // Create a 2-second looping white noise buffer
+                    const bufferSize = c.sampleRate * 2;
+                    const buffer = c.createBuffer(1, bufferSize, c.sampleRate);
+                    const data = buffer.getChannelData(0);
+                    for (let i = 0; i < bufferSize; i++) data[i] = (Math.random() * 2 - 1) * 0.5;
+
+                    const noise = c.createBufferSource();
+                    noise.buffer = buffer;
+                    noise.loop = true;
+
+                    const filter = c.createBiquadFilter();
+                    filter.type = 'highpass';
+                    filter.frequency.setValueAtTime(1400, c.currentTime);
+
+                    const gain = c.createGain();
+                    gain.gain.setValueAtTime(0.0, c.currentTime);
+                    gain.gain.linearRampToValueAtTime(0.30, c.currentTime + 0.15);
+
+                    noise.connect(filter);
+                    filter.connect(gain);
+                    gain.connect(c.destination);
+                    noise.start(c.currentTime);
+
+                    this._hissNode = { source: noise, gain: gain, filter: filter };
+                } catch(e) { console.warn('[AUDIO] Hiss start error:', e); }
+            },
+
+            stopExtinguisherHiss: function() {
+                if (this._hissNode) {
+                    try {
+                        this._hissNode.gain.gain.linearRampToValueAtTime(0.0, getContext().currentTime + 0.1);
+                        const src = this._hissNode.source;
+                        setTimeout(() => { try { src.stop(); src.disconnect(); } catch(e){} }, 150);
+                    } catch(e) {}
+                    this._hissNode = null;
+                }
             }
         };
     })();
@@ -805,7 +855,7 @@
                 } else if (el.components['fire-alarm-station']) {
                     text = 'PULL FIRE ALARM';
                 } else if (el.components['fire-extinguisher']) {
-                    text = el.components['fire-extinguisher'].state === 'AVAILABLE' ? 'GRAB EXTINGUISHER' : 'SPRAY EXTINGUISHER';
+                    text = el.components['fire-extinguisher'].state === EXTINGUISHER_STATES.AVAILABLE ? 'GRAB EXTINGUISHER' : (el.components['fire-extinguisher'].spraying ? 'SPRAYING...' : 'EXTINGUISHER EQUIPPED');
                 } else if (el.getAttribute('data-action-text')) {
                     text = el.getAttribute('data-action-text');
                 }
@@ -940,76 +990,324 @@
         }
     });
 
-    // Fire Extinguisher Component
+    // =========================================================================
+    // EXTINGUISHER STATE MACHINE & CONSTANTS
+    // =========================================================================
+    const EXTINGUISHER_STATES = {
+        AVAILABLE: "available",
+        EQUIPPED: "equipped",
+        SPRAYING: "spraying",
+        EMPTY: "empty"
+    };
+
+    let extinguisherState = EXTINGUISHER_STATES.AVAILABLE;
+    let extinguisherCharge = 100;
+    let extinguisherComponent = null;  // ref to A-Frame component instance
+
+    // =========================================================================
+    // FIRE-HAZARD COMPONENT — Placed on extinguishable/non-extinguishable fires
+    // =========================================================================
+    AFRAME.registerComponent('fire-hazard', {
+        schema: {
+            severity: { type: 'number', default: 1 },
+            extinguishable: { type: 'boolean', default: true },
+            intensity: { type: 'number', default: 100 }
+        },
+        init: function() {
+            this.initialScale = this.el.getAttribute('scale') || { x: 1, y: 1, z: 1 };
+            this.lightEl = this.el.querySelector('a-light');
+            this.initialLightIntensity = this.lightEl ?
+                parseFloat(this.lightEl.getAttribute('light').intensity || 1.3) : 1.3;
+        },
+        updateVisuals: function() {
+            const pct = Math.max(0, this.data.intensity / 100.0);
+            const s = Math.max(0.05, pct);
+            this.el.setAttribute('scale', `${s} ${s} ${s}`);
+            if (this.lightEl) {
+                this.lightEl.setAttribute('light', 'intensity', this.initialLightIntensity * pct);
+            }
+        },
+        extinguish: function() {
+            this.data.intensity = 0;
+            this.el.setAttribute('visible', 'false');
+            const smokeNode = document.querySelector('#smoke-node-1');
+            if (smokeNode) smokeNode.setAttribute('visible', 'false');
+            console.log('[FIRE] Fire extinguished: ' + this.el.id);
+            SimulationManager.showVRToast("✅ FIRE EXTINGUISHED\nContinue evacuating to safety.", 3000);
+            SoundEngine.playSuccess();
+        }
+    });
+
+    // =========================================================================
+    // FIRE EXTINGUISHER COMPONENT — Full State Machine
+    // =========================================================================
     AFRAME.registerComponent('fire-extinguisher', {
         init: function() {
-            this.state = 'AVAILABLE';
+            this.state = EXTINGUISHER_STATES.AVAILABLE;
             this.capacity = 100.0;
             this.foamParticleEl = this.el.querySelector('.extinguisher-foam');
+            this.sprayRaycaster = new THREE.Raycaster();
+            this.sprayDirection = new THREE.Vector3();
+            this.spraying = false;
+            this.equipped = false;
+            this.parentEl = null;
+            extinguisherComponent = this;
+
+            // Log
+            console.log('[EXT DEBUG]');
+            console.log('Extinguisher found: YES');
+            console.log('Pickup system: YES');
+            console.log('Equipped: NO');
+            console.log('Trigger listener: YES');
+            console.log('Spray system: YES');
+            console.log('Target fire: YES');
         },
 
         interact: function() {
-            if (this.state === 'AVAILABLE') {
+            if (this.state === EXTINGUISHER_STATES.AVAILABLE) {
                 this.equip();
-            } else if (this.state === 'HELD' || this.state === 'SPRAYING') {
-                this.discharge();
+            }
+            // If equipped and interacted via E/click, start a single spray burst
+            else if (this.state === EXTINGUISHER_STATES.EQUIPPED) {
+                this.startSpray('interact click');
             }
         },
 
         equip: function() {
-            this.state = 'HELD';
+            this.state = EXTINGUISHER_STATES.EQUIPPED;
+            this.equipped = true;
+            extinguisherState = EXTINGUISHER_STATES.EQUIPPED;
             SoundEngine.playClick();
+
             const rightHand = document.querySelector('#rightHand');
-            const targetParent = rightHand || document.querySelector('#cam');
+            this.parentEl = rightHand || document.querySelector('#cam');
 
             this.el.parentNode.removeChild(this.el);
-            targetParent.appendChild(this.el);
+            this.parentEl.appendChild(this.el);
             this.el.setAttribute('position', '0.22 -0.22 -0.42');
             this.el.setAttribute('rotation', '15 -18 0');
             this.el.setAttribute('scale', '0.65 0.65 0.65');
 
             document.querySelector('#hud-extinguisher-box').style.display = 'block';
-            SimulationManager.showVRToast("🧯 Extinguisher Equipped!\nClick / Trigger to discharge.", 3000);
+            SimulationManager.showVRToast("🧯 EXTINGUISHER EQUIPPED\nTrigger / Left Click = SPRAY", 3000);
             SimulationManager.trackExtinguisherEquipped();
 
+            console.log('[EXTINGUISHER] PICKED UP');
+            console.log('[EXTINGUISHER] STATE = EQUIPPED');
+
             const dbgExt = document.querySelector('#dbg-ext');
-            if (dbgExt) dbgExt.innerText = `HELD (${Math.round(this.capacity)}%)`;
+            if (dbgExt) dbgExt.innerText = `EQUIPPED (${Math.round(this.capacity)}%)`;
+
+            // Bind controller trigger listeners for spray
+            this.bindSprayControls();
         },
 
-        discharge: function() {
+        bindSprayControls: function() {
+            const self = this;
+
+            // Quest VR Controller trigger bindings
+            ['#rightHand', '#leftHand'].forEach(sel => {
+                const hand = document.querySelector(sel);
+                if (hand) {
+                    hand.addEventListener('triggerdown', () => self.startSpray('Quest trigger'));
+                    hand.addEventListener('triggerup', () => self.stopSpray());
+                    hand.addEventListener('gripdown', () => self.startSpray('Quest grip'));
+                    hand.addEventListener('gripup', () => self.stopSpray());
+                }
+            });
+
+            // Desktop mouse: left button = spray
+            window.addEventListener('mousedown', (e) => {
+                if (e.button === 0 && self.equipped && !self.spraying) {
+                    // Exclude UI clicks
+                    if (e.target.tagName === 'BUTTON' || e.target.closest('#debug-overlay') ||
+                        e.target.closest('#status-hud') || e.target.closest('#desktop-hud') ||
+                        e.target.id === 'debug-door-btn') return;
+                    self.startSpray('Desktop mouse');
+                }
+            });
+            window.addEventListener('mouseup', (e) => {
+                if (e.button === 0 && self.spraying) {
+                    self.stopSpray();
+                }
+            });
+
+            // Desktop spacebar = spray
+            window.addEventListener('keydown', (e) => {
+                if (e.code === 'Space' && self.equipped && !self.spraying) {
+                    e.preventDefault();
+                    self.startSpray('Desktop spacebar');
+                }
+            });
+            window.addEventListener('keyup', (e) => {
+                if (e.code === 'Space' && self.spraying) {
+                    self.stopSpray();
+                }
+            });
+        },
+
+        startSpray: function(source) {
             if (this.capacity <= 0) {
-                this.state = 'EMPTY';
+                this.state = EXTINGUISHER_STATES.EMPTY;
+                extinguisherState = EXTINGUISHER_STATES.EMPTY;
                 SoundEngine.playWarningTone();
-                SimulationManager.showVRToast("⚠️ EXTINGUISHER EMPTY!\nEvacuate immediately!", 2200);
+                SimulationManager.showVRToast("🧯 EXTINGUISHER EMPTY", 2000);
+                console.log('[EXTINGUISHER] Cannot spray — EMPTY');
                 return;
             }
 
-            this.state = 'SPRAYING';
-            this.capacity = Math.max(0, this.capacity - 18);
-            SoundEngine.playExtinguisherHiss(0.6);
+            if (this.state !== EXTINGUISHER_STATES.EQUIPPED &&
+                this.state !== EXTINGUISHER_STATES.SPRAYING) {
+                console.warn('[EXTINGUISHER] Cannot spray. Not equipped. State:', this.state);
+                return;
+            }
+
+            this.state = EXTINGUISHER_STATES.SPRAYING;
+            this.spraying = true;
+            extinguisherState = EXTINGUISHER_STATES.SPRAYING;
 
             if (this.foamParticleEl) {
                 this.foamParticleEl.setAttribute('visible', true);
-                setTimeout(() => {
-                    this.foamParticleEl.setAttribute('visible', false);
-                    if (this.capacity > 0) this.state = 'HELD';
-                    else this.state = 'EMPTY';
-                }, 600);
             }
 
-            document.querySelector('#hud-ext-val').innerText = `${Math.round(this.capacity)}%`;
-            document.querySelector('#ext-meter-fill').style.width = `${Math.round(this.capacity)}%`;
+            SoundEngine.startExtinguisherHiss();
+            console.log(`[EXTINGUISHER] SPRAY STARTED (source: ${source})`);
 
-            const rigPos = document.querySelector('#rig').getAttribute('position');
-            const distToTrash = Math.hypot(rigPos.x - (-2.8), rigPos.z - (-0.8));
-            const distToLobbyFire = Math.hypot(rigPos.x - 0.0, rigPos.z - (-24.5));
+            const dbgExt = document.querySelector('#dbg-ext');
+            if (dbgExt) dbgExt.innerText = `SPRAYING (${Math.round(this.capacity)}%)`;
+        },
 
-            if (distToTrash < 3.5 && SimulationManager.trashFireHP > 0) {
-                SimulationManager.suppressTrashFire(35);
-            } else if (distToLobbyFire < 8.0) {
+        stopSpray: function() {
+            if (!this.spraying) return;
+
+            this.spraying = false;
+
+            if (this.capacity > 0) {
+                this.state = EXTINGUISHER_STATES.EQUIPPED;
+                extinguisherState = EXTINGUISHER_STATES.EQUIPPED;
+            } else {
+                this.state = EXTINGUISHER_STATES.EMPTY;
+                extinguisherState = EXTINGUISHER_STATES.EMPTY;
+            }
+
+            if (this.foamParticleEl) {
+                this.foamParticleEl.setAttribute('visible', false);
+            }
+
+            SoundEngine.stopExtinguisherHiss();
+            console.log('[EXTINGUISHER] SPRAY STOPPED');
+
+            const dbgExt = document.querySelector('#dbg-ext');
+            if (dbgExt) dbgExt.innerText = `${this.state.toUpperCase()} (${Math.round(this.capacity)}%)`;
+        },
+
+        tick: function(time, delta) {
+            if (!this.spraying) return;
+
+            const dt = delta / 1000.0; // seconds
+
+            // Drain charge
+            this.capacity = Math.max(0, this.capacity - 10 * dt);
+            extinguisherCharge = this.capacity;
+
+            // Update HUD
+            const hudVal = document.querySelector('#hud-ext-val');
+            if (hudVal) hudVal.innerText = `${Math.round(this.capacity)}%`;
+            const meterFill = document.querySelector('#ext-meter-fill');
+            if (meterFill) meterFill.style.width = `${Math.round(this.capacity)}%`;
+
+            // Auto-stop when empty
+            if (this.capacity <= 0) {
+                this.stopSpray();
+                this.state = EXTINGUISHER_STATES.EMPTY;
+                extinguisherState = EXTINGUISHER_STATES.EMPTY;
                 SoundEngine.playWarningTone();
-                SimulationManager.showVRToast("⚠️ FIRE TOO LARGE!\nDo NOT fight large structural fires.\nEVACUATE IMMEDIATELY!", 3500);
-                SimulationManager.trackWrongDecision('Attempted to fight uncontrollable structural fire');
+                SimulationManager.showVRToast("⚠️ EXTINGUISHER EMPTY!\nEvacuate immediately!", 2200);
+                console.log('[EXTINGUISHER] CHARGE DEPLETED — EMPTY');
+                return;
+            }
+
+            // Check spray hit against fires using directional cone test
+            this.checkSprayHit(dt);
+        },
+
+        checkSprayHit: function(dt) {
+            // Get world position and forward direction of the extinguisher
+            const el3D = this.el.object3D;
+            const worldPos = new THREE.Vector3();
+            el3D.getWorldPosition(worldPos);
+
+            const worldDir = new THREE.Vector3(0, 0, -1);
+            el3D.getWorldDirection(worldDir);
+            worldDir.normalize();
+
+            // Check all fire-hazard entities
+            const fireEls = document.querySelectorAll('[fire-hazard]');
+            let hitAny = false;
+
+            fireEls.forEach(fireEl => {
+                if (!fireEl.getAttribute('visible') || fireEl.getAttribute('visible') === 'false') return;
+                const hazard = fireEl.components['fire-hazard'];
+                if (!hazard || hazard.data.intensity <= 0) return;
+
+                const firePos = new THREE.Vector3();
+                fireEl.object3D.getWorldPosition(firePos);
+
+                const toFire = new THREE.Vector3().subVectors(firePos, worldPos);
+                const dist = toFire.length();
+
+                // Max effective range: 5m
+                if (dist > 5.0) return;
+
+                // Cone test: angle between spray direction and direction to fire
+                toFire.normalize();
+                const dotProduct = worldDir.dot(toFire);
+                // Forgiving cone: ~60 degree half-angle (cos(60) ≈ 0.5)
+                // More forgiving at closer range
+                const minDot = dist < 2.0 ? 0.2 : (dist < 3.5 ? 0.35 : 0.5);
+
+                if (dotProduct < minDot) return;
+
+                hitAny = true;
+
+                // Apply damage
+                if (!hazard.data.extinguishable) {
+                    SoundEngine.playWarningTone();
+                    SimulationManager.showVRToast("⚠️ FIRE TOO LARGE\nDO NOT FIGHT THE FIRE\nEVACUATE IMMEDIATELY!", 2500);
+                    SimulationManager.trackWrongDecision('Attempted to fight uncontrollable structural fire');
+                    return;
+                }
+
+                // Reduce intensity
+                hazard.data.intensity = Math.max(0, hazard.data.intensity - 30 * dt);
+                hazard.updateVisuals();
+
+                // Sync with SimulationManager trash fire HP
+                SimulationManager.trashFireHP = Math.round(hazard.data.intensity);
+
+                // Update debug
+                const dbgFireHP = document.querySelector('#dbg-fire-hp');
+                if (dbgFireHP) dbgFireHP.innerText = `${Math.round(hazard.data.intensity)}%`;
+
+                console.log(`[EXTINGUISHER] FIRE INTENSITY: ${Math.round(hazard.data.intensity)}%`);
+
+                if (hazard.data.intensity <= 0) {
+                    hazard.extinguish();
+                    SimulationManager.trashFireHP = 0;
+                } else if (Math.round(hazard.data.intensity) % 10 < 2) {
+                    SimulationManager.showVRToast(`🔥 FIRE SUPPRESSION\nIntensity: ${Math.round(hazard.data.intensity)}%`, 500);
+                }
+            });
+
+            // Update debug target info
+            const dbgExt = document.querySelector('#dbg-ext');
+            if (dbgExt) {
+                const chargeStr = Math.round(this.capacity);
+                if (hitAny) {
+                    dbgExt.innerText = `SPRAYING (${chargeStr}%) — HITTING FIRE`;
+                } else {
+                    dbgExt.innerText = `SPRAYING (${chargeStr}%) — NO TARGET`;
+                }
             }
         }
     });
@@ -1195,10 +1493,22 @@
             <a-cylinder id="trash-can" position="-2.8 0.22 -0.8" radius="0.22" height="0.45" color="#64748b"></a-cylinder>
 
             <!-- Trash Fire (Scenario 1) -->
-            <a-entity id="trash-fire" position="-2.8 0.45 -0.8" visible="false" flicker-fire="intensity: 1.3">
+            <a-entity id="trash-fire" position="-2.8 0.45 -0.8" visible="false" flicker-fire="intensity: 1.3"
+                      fire-hazard="severity: 1; extinguishable: true; intensity: 100">
                 <a-cone class="flame-core" radius-bottom="0.2" radius-top="0.02" height="0.5" color="#ef4444" material="emissive: #ef4444; emissiveIntensity: 1.2"></a-cone>
                 <a-cone class="flame-outer" radius-bottom="0.26" radius-top="0.01" height="0.65" color="#f97316" material="emissive: #f97316; opacity: 0.85; transparent: true"></a-cone>
                 <a-light type="point" color="#ff7700" intensity="1.3" distance="4"></a-light>
+            </a-entity>
+
+            <!-- DEVELOPMENT TEST FIRE (always visible, near Room 101, extinguishable) -->
+            <a-entity id="test-fire" position="2.5 0.15 -1.2" visible="true" flicker-fire="intensity: 1.0"
+                      fire-hazard="severity: 1; extinguishable: true; intensity: 100">
+                <a-cone class="flame-core" radius-bottom="0.15" radius-top="0.01" height="0.38" color="#ef4444" material="emissive: #ef4444; emissiveIntensity: 1.0"></a-cone>
+                <a-cone class="flame-outer" radius-bottom="0.20" radius-top="0.005" height="0.50" color="#f97316" material="emissive: #f97316; opacity: 0.8; transparent: true"></a-cone>
+                <a-light type="point" color="#ff7700" intensity="0.9" distance="3"></a-light>
+                <a-plane position="0 0.55 0" width="0.8" height="0.2" color="#1e293b" material="opacity: 0.9">
+                    <a-text value="TEST FIRE" align="center" width="1.2" color="#f59e0b"></a-text>
+                </a-plane>
             </a-entity>
 
             <!-- 3D Onboarding Board -->
@@ -1396,7 +1706,8 @@
             </a-plane>
 
             <!-- Major Lobby Fire (Scenarios 2 & 3) -->
-            <a-entity id="lobby-major-fire" position="0 0 -24.5" visible="false" flicker-fire="intensity: 4.0">
+            <a-entity id="lobby-major-fire" position="0 0 -24.5" visible="false" flicker-fire="intensity: 4.0"
+                      fire-hazard="severity: 4; extinguishable: false; intensity: 100">
                 <a-cone class="flame-core" position="-0.8 1.0 0" radius-bottom="0.8" radius-top="0.06" height="2.2" color="#ef4444" material="emissive: #ef4444; emissiveIntensity: 1.4"></a-cone>
                 <a-cone class="flame-outer" position="-0.8 1.2 0" radius-bottom="1.1" radius-top="0.02" height="2.6" color="#f97316" material="emissive: #f97316; opacity: 0.85; transparent: true"></a-cone>
                 <a-cone class="flame-core" position="0.8 0.9 0.2" radius-bottom="0.7" radius-top="0.05" height="1.9" color="#ef4444" material="emissive: #ef4444; emissiveIntensity: 1.4"></a-cone>
@@ -2032,6 +2343,38 @@
                     document.querySelector('#dbg-fire-hp').innerText = `${this.trashFireHP}%`;
                     document.querySelector('#dbg-door101').innerText = room101DoorOpen ? 'OPEN' : 'CLOSED';
 
+                    // Extinguisher debug
+                    const extSpray = document.querySelector('#dbg-ext-spray');
+                    const extCharge = document.querySelector('#dbg-ext-charge');
+                    const extTarget = document.querySelector('#dbg-ext-target');
+                    if (extSpray) extSpray.innerText = extinguisherState === EXTINGUISHER_STATES.SPRAYING ? 'ACTIVE' : 'INACTIVE';
+                    if (extCharge) extCharge.innerText = `${Math.round(extinguisherCharge)}%`;
+                    if (extTarget) {
+                        if (extinguisherState === EXTINGUISHER_STATES.SPRAYING && extinguisherComponent) {
+                            // Find closest fire target
+                            const fireEls = document.querySelectorAll('[fire-hazard]');
+                            let closest = null;
+                            let closestDist = Infinity;
+                            const rigPos = document.querySelector('#rig').getAttribute('position');
+                            fireEls.forEach(f => {
+                                if (f.getAttribute('visible') === 'false') return;
+                                const hazard = f.components['fire-hazard'];
+                                if (!hazard || hazard.data.intensity <= 0) return;
+                                const fPos = f.getAttribute('position');
+                                const dist = Math.hypot(rigPos.x - fPos.x, rigPos.z - fPos.z);
+                                if (dist < closestDist) { closestDist = dist; closest = f; }
+                            });
+                            if (closest) {
+                                const h = closest.components['fire-hazard'];
+                                extTarget.innerText = `${closest.id} (${closestDist.toFixed(1)}m, ${h.data.extinguishable ? 'Ext: YES' : 'Ext: NO'}, ${Math.round(h.data.intensity)}%)`;
+                            } else {
+                                extTarget.innerText = 'NONE';
+                            }
+                        } else {
+                            extTarget.innerText = 'NONE';
+                        }
+                    }
+
                     let zone = 'Room 101';
                     if (p.z < -26) zone = 'Exterior Courtyard / Assembly';
                     else if (p.z < -18) zone = 'Main Lobby';
@@ -2129,6 +2472,34 @@
                 firstMoveTime = 0;
                 exitUsed = 'None';
                 this.trashFireHP = 100;
+
+                // Reset extinguisher state
+                extinguisherState = EXTINGUISHER_STATES.AVAILABLE;
+                extinguisherCharge = 100;
+                if (extinguisherComponent) {
+                    extinguisherComponent.stopSpray();
+                    extinguisherComponent.state = EXTINGUISHER_STATES.AVAILABLE;
+                    extinguisherComponent.capacity = 100;
+                    extinguisherComponent.equipped = false;
+                    extinguisherComponent.spraying = false;
+                }
+                SoundEngine.stopExtinguisherHiss();
+
+                // Reset fire-hazard components
+                document.querySelectorAll('[fire-hazard]').forEach(el => {
+                    const h = el.components['fire-hazard'];
+                    if (h) {
+                        h.data.intensity = 100;
+                        el.setAttribute('scale', '1 1 1');
+                    }
+                });
+                // Reset test fire visibility
+                const testFire = document.querySelector('#test-fire');
+                if (testFire) {
+                    testFire.setAttribute('visible', 'true');
+                    const th = testFire.components['fire-hazard'];
+                    if (th) th.data.intensity = 100;
+                }
 
                 // Close Room 101 Door
                 if (room101DoorOpen) {
